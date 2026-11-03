@@ -2,12 +2,13 @@ import "@fontsource/roboto-mono/400.css";
 import "@fontsource/roboto-mono/700.css";
 import "./styles.css";
 
-import { backend } from "./backend";
+import { type Backend, NotDesktopError, createBackend } from "./backend";
 import { Editor } from "./editor";
 import { spawnEffect } from "./effects";
 import { isNotFound } from "./errors";
 import { Find } from "./find";
 import { linkAt, linkRanges } from "./links";
+import { ParagraphLayer } from "./paragraphs";
 import {
   ALL,
   type AppState,
@@ -62,6 +63,7 @@ let palette: Palette;
 let find: Find;
 let currentId: string | null = null;
 let stats: TypingStats;
+let backend: Backend;
 /** Where the notes folder is, for display. */
 let notesDirPath = "";
 
@@ -583,27 +585,32 @@ function followLinkAtCaret(): boolean {
 
 /** Underline [[links]] on a layer behind the text. */
 let decorTimer = 0;
+let linkLayer: ParagraphLayer;
+
+/** One paragraph with its [[links]] wrapped for underlining. */
+function renderLinks(text: string): Node[] {
+  const ranges = linkRanges(text);
+  if (!ranges.length) return [document.createTextNode(text || "\u200b")];
+  const parts: Node[] = [];
+  let last = 0;
+  for (const [a, b] of ranges) {
+    parts.push(document.createTextNode(text.slice(last, a)));
+    const u = document.createElement("span");
+    u.className = "link";
+    u.textContent = text.slice(a, b);
+    parts.push(u);
+    last = b;
+  }
+  parts.push(document.createTextNode(text.slice(last)));
+  return parts;
+}
+
 function paintLinks(): void {
   clearTimeout(decorTimer);
   decorTimer = window.setTimeout(() => {
     const text = editor.ta.value;
-    const ranges = linkRanges(text);
-    if (!ranges.length) {
-      els.decor.replaceChildren();
-      return;
-    }
-    const parts: Node[] = [];
-    let last = 0;
-    for (const [a, b] of ranges) {
-      parts.push(document.createTextNode(text.slice(last, a)));
-      const u = document.createElement("span");
-      u.className = "link";
-      u.textContent = text.slice(a, b);
-      parts.push(u);
-      last = b;
-    }
-    parts.push(document.createTextNode(text.slice(last) + "\u200b"));
-    els.decor.replaceChildren(...parts);
+    if (!text.includes("[[")) return linkLayer.clear();
+    linkLayer.update(text.split("\n"), (t) => t, renderLinks);
   }, 60);
 }
 
@@ -1097,7 +1104,26 @@ async function bindWindowClose(): Promise<void> {
 
 // ---------------------------------------------------------------- boot
 
+/** Shown instead of the app if it's opened outside the desktop shell. */
+function showNotDesktop(): void {
+  const box = document.createElement("div");
+  box.className = "not-desktop";
+  const title = document.createElement("h1");
+  title.textContent = "monkeynotes is a desktop app";
+  const text = document.createElement("p");
+  text.textContent = "build it from github.com/nathanksou/monkeynotes and run it from there.";
+  box.append(title, text);
+  document.body.replaceChildren(box);
+  document.body.classList.add("ready");
+}
+
 async function main(): Promise<void> {
+  try {
+    backend = await createBackend();
+  } catch (e) {
+    if (e instanceof NotDesktopError) return showNotDesktop();
+    throw e;
+  }
   let rawState: string | null = null;
   try {
     rawState = await backend.loadState();
@@ -1157,6 +1183,7 @@ async function main(): Promise<void> {
     onTyped: (x, y, h, ch) => spawnEffect(settings().typingAnimation, els.fx, editor.caretEl, x, y, h, ch),
   });
   find = new Find($("#find"), editor, $("#highlights"), els.scroller);
+  linkLayer = new ParagraphLayer(els.decor);
 
   applySettings();
   bindEvents();

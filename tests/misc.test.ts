@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cleanTarget, linkAt, linkRanges } from "../src/links";
+import { locate, starts } from "../src/paragraphs";
 import { TypingStats, dayKey } from "../src/stats";
 import { isNewer } from "../src/updates";
 
@@ -60,5 +61,19 @@ describe("update check", () => {
     expect(isNewer("0.10.0", "0.9.0")).toBe(true);
     expect(isNewer("v0.2.0", "0.2.0")).toBe(false);
     expect(isNewer("0.1.9", "0.2.0")).toBe(false);
+  });
+});
+
+describe("paragraph helpers", () => {
+  const paras = "ab\n\ncde".split("\n"); // ["ab", "", "cde"]
+  it("locates a text position inside its paragraph", () => {
+    expect(locate(paras, 0)).toEqual({ index: 0, offset: 0 });
+    expect(locate(paras, 2)).toEqual({ index: 0, offset: 2 }); // end of "ab"
+    expect(locate(paras, 3)).toEqual({ index: 1, offset: 0 }); // the empty line
+    expect(locate(paras, 4)).toEqual({ index: 2, offset: 0 });
+    expect(locate(paras, 7)).toEqual({ index: 2, offset: 3 }); // end of text
+  });
+  it("lists paragraph start offsets", () => {
+    expect(starts(paras)).toEqual([0, 3, 4]);
   });
 });

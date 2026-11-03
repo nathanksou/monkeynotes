@@ -77,7 +77,7 @@ npm run app:build   # build an installer for your OS (output: src-tauri/target/r
 
 `npm test` runs the unit tests (file naming, folders, trash, links, stats), and `cargo test` in `src-tauri` runs the Rust ones.
 
-`npm run dev` runs just the UI in a browser at http://localhost:1420. In the browser, notes are kept in a small fake file system in localStorage, which is handy for quick UI work.
+monkeynotes is desktop-only. For development, `npm run dev` can also serve the UI to a plain browser at http://localhost:1420, with notes kept in a fake file system in localStorage. The UI tests use this. That code lives in `src/backend-browser.ts` and is left out of release builds; a release build opened in a browser just says it's a desktop app.
 
 ### layout
 
@@ -85,9 +85,11 @@ npm run app:build   # build an installer for your OS (output: src-tauri/target/r
 src/
   main.ts               app state, rendering, shortcuts, commands
   vault.ts              notes folder in memory, synced to disk (naming, trash, folders)
-  backend.ts            disk access: Tauri commands, or localStorage in the browser
+  backend.ts            disk access (Tauri commands)
+  backend-browser.ts    development only: fake notes folder for running the UI in a browser
   errors.ts             error codes shared with the Rust side
   editor.ts             textarea with the custom smooth caret
+  paragraphs.ts         per-paragraph layers, so typing stays fast in long notes
   find.ts               find in note
   stats.ts              typing stats (wpm, streaks, daily totals)
   stats-view.ts         the full stats view

@@ -3,12 +3,14 @@
  * transparent textarea, using the same text styles so they line up exactly.
  */
 import type { Editor } from "./editor";
+import { ParagraphLayer, starts } from "./paragraphs";
 
 const MAX_MATCHES = 5000;
 
 export class Find {
   private input: HTMLInputElement;
   private count: HTMLElement;
+  private layer: ParagraphLayer;
   private matches: number[] = [];
   private lengths: number[] = [];
   private index = -1;
@@ -16,9 +18,10 @@ export class Find {
   constructor(
     private root: HTMLElement,
     private editor: Editor,
-    private layer: HTMLElement,
+    layerEl: HTMLElement,
     private scroller: HTMLElement,
   ) {
+    this.layer = new ParagraphLayer(layerEl);
     this.input = root.querySelector("input")!;
     this.count = root.querySelector(".find-count")!;
     this.input.addEventListener("input", () => this.search(true));
@@ -57,7 +60,7 @@ export class Find {
     this.root.hidden = true;
     const start = this.matches[this.index];
     const len = this.lengths[this.index];
-    this.layer.replaceChildren();
+    this.layer.clear();
     if (!focusEditor) return;
     if (start !== undefined) this.editor.select(start, start + len);
     this.editor.focus();
@@ -103,26 +106,44 @@ export class Find {
   private paint(text: string): void {
     this.count.textContent = this.input.value ? `${this.matches.length ? this.index + 1 : 0}/${this.matches.length}` : "";
     this.root.classList.toggle("none", !!this.input.value && !this.matches.length);
-    const parts: Node[] = [];
-    let last = 0;
+    // Group matches by paragraph (a query can't contain a newline).
+    const paras = text.split("\n");
+    const at = starts(paras);
+    const byPara = new Map<number, [number, number, boolean][]>();
+    let p = 0;
     this.matches.forEach((m, i) => {
-      const end = m + this.lengths[i];
-      parts.push(document.createTextNode(text.slice(last, m)));
-      const mark = document.createElement("mark");
-      mark.textContent = text.slice(m, end);
-      if (i === this.index) mark.className = "current";
-      parts.push(mark);
-      last = end;
+      while (p + 1 < at.length && at[p + 1] <= m) p++;
+      const list = byPara.get(p) ?? [];
+      list.push([m - at[p], this.lengths[i], i === this.index]);
+      byPara.set(p, list);
     });
-    parts.push(document.createTextNode(text.slice(last) + "​"));
-    this.layer.replaceChildren(...parts);
+    this.layer.update(
+      paras,
+      (t, i) => t + "\u0000" + JSON.stringify(byPara.get(i) ?? []),
+      (t, i) => {
+        const marks = byPara.get(i);
+        if (!marks) return [document.createTextNode(t || "\u200b")];
+        const parts: Node[] = [];
+        let last = 0;
+        for (const [start, len, current] of marks) {
+          parts.push(document.createTextNode(t.slice(last, start)));
+          const mark = document.createElement("mark");
+          mark.textContent = t.slice(start, start + len);
+          if (current) mark.className = "current";
+          parts.push(mark);
+          last = start + len;
+        }
+        parts.push(document.createTextNode(t.slice(last)));
+        return parts;
+      },
+    );
   }
 
   private reveal(): void {
-    const mark = this.layer.querySelector<HTMLElement>("mark.current");
+    const mark = this.layer.el.querySelector<HTMLElement>("mark.current");
     if (!mark) return;
     const s = this.scroller;
-    const top = mark.offsetTop + (this.layer.offsetParent as HTMLElement).offsetTop;
+    const top = mark.offsetTop + (this.layer.el.offsetParent as HTMLElement).offsetTop;
     if (top < s.scrollTop + 40 || top > s.scrollTop + s.clientHeight - 80) {
       s.scrollTop = top - s.clientHeight / 3;
     }

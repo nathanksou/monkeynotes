@@ -1,11 +1,17 @@
 /**
  * A plain <textarea> with a custom, smoothly-animated caret.
  *
- * The native caret is hidden. A hidden "mirror" div with identical text styles
- * holds the text up to the caret plus a marker span; the marker's offset gives
- * the caret position. The mirror also tells us how tall the textarea should be,
- * so the textarea grows with its content and the page scrolls instead.
+ * A textarea can't report where its caret is on screen, so the native caret is
+ * hidden and a hidden "mirror" with identical text styles is used to measure it:
+ * a marker is put at the caret's spot in the mirror and its position is read.
+ * The mirror also says how tall the textarea should be, so it grows with its
+ * content and the page scrolls instead.
+ *
+ * The mirror holds one block per paragraph and only changed paragraphs are
+ * rebuilt (see paragraphs.ts), so measuring stays cheap in very long notes.
  */
+import { ParagraphLayer, locate } from "./paragraphs";
+
 export interface EditorCallbacks {
   onChange(value: string): void;
   onType(insertedChars: number): void;
@@ -15,7 +21,12 @@ export interface EditorCallbacks {
 
 export class Editor {
   readonly ta: HTMLTextAreaElement;
-  private mirror: HTMLDivElement;
+  private mirror: ParagraphLayer;
+  /** The text the mirror currently shows, split into paragraphs. */
+  private paras: string[] = [];
+  private mirrored: string | null = null;
+  /** The paragraph that currently holds the caret marker. */
+  private marked = -1;
   private caret: HTMLDivElement;
   private wrap: HTMLElement;
   private scroller: HTMLElement;
@@ -32,7 +43,7 @@ export class Editor {
     this.wrap = wrap;
     this.scroller = scroller;
     this.ta = wrap.querySelector("textarea")!;
-    this.mirror = wrap.querySelector(".mirror")!;
+    this.mirror = new ParagraphLayer(wrap.querySelector(".mirror")!);
     this.caret = wrap.querySelector(".caret")!;
 
     const ta = this.ta;
@@ -80,6 +91,11 @@ export class Editor {
 
   get value(): string {
     return this.ta.value;
+  }
+
+  /** The note's paragraphs as of the last measurement (shared with other layers). */
+  get paragraphs(): string[] {
+    return this.paras;
   }
 
   /** Replace the content (e.g. switching notes). Resets undo history. */
@@ -133,16 +149,29 @@ export class Editor {
     const value = ta.value;
     const pos = ta.selectionDirection === "backward" ? ta.selectionStart : ta.selectionEnd;
 
-    const marker = document.createElement("span");
-    marker.textContent = "​";
-    mirror.replaceChildren(
-      document.createTextNode(value.slice(0, pos)),
-      marker,
-      // trailing zero-width space so a final empty line still has height
-      document.createTextNode(value.slice(pos) + "​"),
-    );
+    // Bring the mirror up to date; only changed paragraphs are rebuilt.
+    if (value !== this.mirrored) {
+      this.paras = value.split("\n");
+      this.mirrored = value;
+    }
+    const { index, offset } = locate(this.paras, pos);
+    // The paragraph that held the marker last time goes back to plain text (a
+    // stray zero-width marker could change where its lines wrap).
+    if (this.marked !== -1 && this.marked !== index) mirror.invalidate(this.marked);
+    mirror.update(this.paras);
 
-    ta.style.height = `${mirror.offsetHeight}px`;
+    // Put the marker at the caret, inside its paragraph only.
+    const text = this.paras[index] ?? "";
+    const marker = document.createElement("span");
+    marker.textContent = "\u200b";
+    mirror.block(index)?.replaceChildren(
+      document.createTextNode(text.slice(0, offset)),
+      marker,
+      document.createTextNode(text.slice(offset)),
+    );
+    this.marked = index;
+
+    ta.style.height = `${mirror.el.offsetHeight}px`;
     const x = marker.offsetLeft;
     const y = marker.offsetTop;
     const h = marker.offsetHeight;
