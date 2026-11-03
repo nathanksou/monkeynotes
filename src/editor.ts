@@ -89,6 +89,13 @@ export class Editor {
     this.schedule();
   }
 
+  /** Select a range and scroll it into view. */
+  select(start: number, end: number): void {
+    this.ta.setSelectionRange(start, end);
+    this.follow = true;
+    this.schedule();
+  }
+
   setSmooth(on: boolean): void {
     this.caret.classList.toggle("smooth", on);
   }

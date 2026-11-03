@@ -12,8 +12,11 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 - **typing-test feel**: Roboto Mono, a custom smooth caret, live wpm, and focus mode that fades the UI while you type and brings it back when you move the mouse.
 - **zen mode** (`ctrl+\`): hide the sidebars and just write.
 - **command line** (`esc` or `ctrl+k`): every action and setting is a few keystrokes away, including themes with live preview.
-- **11 themes**: banana, paper, nord, dracula, gruvbox, catppuccin, rosé pine, solarized light, matcha, espresso, terminal.
-- **local only**: no accounts, no sync, no telemetry. Your notes are one JSON file on your machine.
+- **189 themes**: Monkeytype's whole collection plus a couple of originals, with live preview, and `random theme` when you can't decide.
+- **plain markdown files**: every note is a `.md` file in a folder you choose, so you can sync it with iCloud, Dropbox or git, or open it in any other editor.
+- **find in note** (`ctrl+f`): every match is highlighted; `enter` and `shift+enter` step through them.
+- **import / export**: bring in `.md` / `.txt` files or a whole folder, and export a single note or everything.
+- **local only**: no accounts, no sync service, no telemetry.
 - **tiny**: built with [Tauri](https://tauri.app), so installers are a few MB instead of 100+.
 
 ## keyboard
@@ -24,7 +27,8 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 | `ctrl+n` | new note |
 | `ctrl+shift+n` | new folder |
 | `ctrl+p` | jump to note |
-| `ctrl+shift+f` | search notes |
+| `ctrl+f` | find in note |
+| `ctrl+shift+f` | search all notes |
 | `ctrl+\` | zen mode |
 | `alt+↑` / `alt+↓` | previous / next note |
 | `ctrl+=` / `ctrl+-` | font size |
@@ -33,13 +37,21 @@ On macOS, `cmd` works anywhere `ctrl` is listed. Right-click a note or folder fo
 
 ## where your notes live
 
-All notes are stored in a single `notes.json` file, written atomically. The previous version is kept as `notes.json.bak` each time the app launches.
+Notes are plain markdown files. By default they live in `Documents/monkeynotes`. Use `change notes folder` in the command line to point the app at any folder, such as an existing folder of markdown notes or a synced one.
 
-| os | path |
-| --- | --- |
-| macOS | `~/Library/Application Support/com.nathansou.monkeynotes/` |
-| Windows | `%APPDATA%\com.nathansou.monkeynotes\` |
-| Linux | `~/.local/share/com.nathansou.monkeynotes/` |
+```
+monkeynotes/
+  welcome to monkeynotes.md   notes in the default "notes" folder
+  ideas/app idea.md           each subfolder is a folder in the app
+  .trash/                     recently deleted (kept for 30 days)
+  .monkeynotes.json           pins and trash bookkeeping
+```
+
+- A note made in the app is named after its first line, and the file is renamed when the title changes. Files you named yourself keep their names.
+- Edits made outside the app show up when you switch back to it.
+- Every write goes to a temp file first and is then renamed into place, so a crash can't leave a half-written note.
+
+App settings (theme, font and so on) are stored separately in the app's data folder (`~/Library/Application Support/com.nathansou.monkeynotes` on macOS, `%APPDATA%\com.nathansou.monkeynotes` on Windows, `~/.local/share/com.nathansou.monkeynotes` on Linux). Notes from v0.1 are moved into the notes folder automatically on first launch.
 
 ## development
 
@@ -51,21 +63,24 @@ npm run app:dev     # run the desktop app with hot reload
 npm run app:build   # build an installer for your OS (output: src-tauri/target/release/bundle)
 ```
 
-`npm run dev` runs just the UI in a browser at http://localhost:1420. In the browser, notes are saved to localStorage, which is handy for quick UI work.
+`npm run dev` runs just the UI in a browser at http://localhost:1420. In the browser, notes are kept in a small fake file system in localStorage, which is handy for quick UI work.
 
 ### layout
 
 ```
 src/
-  main.ts      app state, rendering, shortcuts, commands
-  editor.ts    textarea with the custom smooth caret
-  palette.ts   command line (menus, previews, prompts)
-  model.ts     data types, defaults, helpers
-  storage.ts   load/save (Tauri backend or localStorage)
-  themes.ts    color themes
+  main.ts               app state, rendering, shortcuts, commands
+  vault.ts              notes folder in memory, synced to disk (naming, trash, folders)
+  backend.ts            disk access: Tauri commands, or localStorage in the browser
+  editor.ts             textarea with the custom smooth caret
+  find.ts               find in note
+  palette.ts            command line (menus, previews, prompts)
+  model.ts              data types, defaults, helpers
+  themes.ts             theme list
+  themes-monkeytype.ts  Monkeytype's palettes (generated)
   styles.css
 src-tauri/
-  src/lib.rs   load_db / save_db commands (atomic writes + backup)
+  src/lib.rs            file-system commands (scan, atomic write, rename, import/export)
 ```
 
 ### releases
@@ -74,14 +89,13 @@ Push a tag such as `v0.1.0`. The `release` workflow then builds macOS (Apple Sil
 
 ## roadmap ideas
 
-- store notes as plain markdown files in a folder you choose
-- export / import
-- find in note
-- more themes and custom themes
+- find and replace
+- custom themes
+- markdown preview
 
 ## credits
 
-monkeynotes takes its visual inspiration from [Monkeytype](https://github.com/monkeytypegame/monkeytype), the open-source typing test, and shares its license. It is not affiliated with Monkeytype. The font is [Roboto Mono](https://fonts.google.com/specimen/Roboto+Mono), licensed under Apache 2.0.
+monkeynotes takes its visual inspiration from [Monkeytype](https://github.com/monkeytypegame/monkeytype), the open-source typing test, and shares its license. The theme palettes in `src/themes-monkeytype.ts` come from Monkeytype (GPL-3.0). monkeynotes is not affiliated with Monkeytype. The font is [Roboto Mono](https://fonts.google.com/specimen/Roboto+Mono), licensed under Apache 2.0.
 
 ## license
 

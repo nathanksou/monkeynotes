@@ -35,9 +35,17 @@
           <div id="stats"><span id="wpm" class="idle"></span></div>
           <button id="open-palette" class="ghost" title="command line (esc)">esc</button>
         </div>
+        <div id="find" hidden>
+          <input type="text" placeholder="find in note" spellcheck="false" autocomplete="off" />
+          <span class="find-count"></span>
+          <button class="find-prev ghost" title="previous (shift+enter)">&uarr;</button>
+          <button class="find-next ghost" title="next (enter)">&darr;</button>
+          <button class="find-close ghost" title="close (esc)">&times;</button>
+        </div>
         <div id="scroller">
           <div id="page">
             <div id="wrap">
+              <div id="highlights" class="text" aria-hidden="true"></div>
               <textarea id="editor" class="text" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="note"></textarea>
               <div class="mirror text" aria-hidden="true"></div>
               <div class="caret hidden smooth"></div>
@@ -55,6 +63,8 @@
         </footer>
       </main>
     </div>
+
+    <div id="toast" hidden></div>
 
     <div id="palette" hidden>
       <div class="palette-box">

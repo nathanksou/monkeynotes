@@ -2,25 +2,29 @@ import "@fontsource/roboto-mono/400.css";
 import "@fontsource/roboto-mono/700.css";
 import "./styles.css";
 
+import { backend } from "./backend";
 import { Editor } from "./editor";
+import { Find } from "./find";
 import {
   ALL,
-  DEFAULT_FOLDER,
-  TRASH,
-  type DB,
+  type AppState,
   type FontFamily,
   type LineWidth,
   type Note,
+  ROOT,
+  type Settings,
+  TRASH,
+  WELCOME,
   formatDate,
+  normalizeState,
   notePreview,
   noteTitle,
   sortNotes,
-  uid,
   wordCount,
 } from "./model";
 import { type Command, type Menu, Palette } from "./palette";
-import * as storage from "./storage";
 import { applyTheme, findTheme, themes } from "./themes";
+import { Vault, safeName } from "./vault";
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -34,24 +38,50 @@ const els = {
   page: $("#page"),
   wpm: $("#wpm"),
   meta: $("#note-meta"),
+  toast: $("#toast"),
 };
 
-let db: DB;
+let state: AppState;
+let vault: Vault;
 let editor: Editor;
 let palette: Palette;
+let find: Find;
+let currentId: string | null = null;
 
 // ---------------------------------------------------------------- state helpers
 
-const persist = () => storage.save(db);
-const settings = () => db.settings;
-const current = (): Note | undefined => db.notes.find((n) => n.id === db.view.noteId);
+const settings = () => state.settings;
+const current = (): Note | undefined => vault.get(currentId);
+const view = () => state.view;
+const isRealFolder = (id: string) => vault.folders.some((f) => f.id === id);
 const folderName = (id: string) =>
-  id === ALL ? "all notes" : id === TRASH ? "recently deleted" : db.folders.find((f) => f.id === id)?.name ?? "notes";
+  id === ALL ? "all notes" : id === TRASH ? "recently deleted" : (vault.folders.find((f) => f.id === id)?.name ?? "notes");
+/** Where new and imported notes go from the current view. */
+const targetFolder = () => (isRealFolder(view().folderId) ? view().folderId : ROOT);
+
+let stateTimer = 0;
+function saveState(): void {
+  clearTimeout(stateTimer);
+  stateTimer = window.setTimeout(() => void writeState(), 400);
+}
+function writeState(): Promise<void> {
+  clearTimeout(stateTimer);
+  state.view.notePath = current()?.path || null;
+  return backend.saveState(JSON.stringify(state, null, 1)).catch((e) => toast(`couldn't save settings: ${e}`));
+}
+
+let toastTimer = 0;
+function toast(msg: string): void {
+  els.toast.textContent = msg;
+  els.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (els.toast.hidden = true), 4000);
+}
 
 function notesInView(): Note[] {
-  const { folderId } = db.view;
+  const { folderId } = view();
   const q = els.search.value.trim().toLowerCase();
-  return db.notes
+  return vault.notes
     .filter((n) => (folderId === TRASH ? !!n.deletedAt : !n.deletedAt))
     .filter((n) => folderId === ALL || folderId === TRASH || n.folderId === folderId)
     .filter((n) => !q || n.body.toLowerCase().includes(q))
@@ -61,20 +91,20 @@ function notesInView(): Note[] {
 // ---------------------------------------------------------------- rendering
 
 function renderFolders(): void {
-  const live = db.notes.filter((n) => !n.deletedAt);
-  const trashed = db.notes.length - live.length;
+  const live = vault.notes.filter((n) => !n.deletedAt);
+  const trashed = vault.notes.length - live.length;
   const rows: { id: string; name: string; count: number }[] = [
     { id: ALL, name: "all notes", count: live.length },
-    ...db.folders.map((f) => ({ id: f.id, name: f.name, count: live.filter((n) => n.folderId === f.id).length })),
+    ...vault.folders.map((f) => ({ id: f.id, name: f.name, count: live.filter((n) => n.folderId === f.id).length })),
   ];
-  if (trashed || db.view.folderId === TRASH) rows.push({ id: TRASH, name: "recently deleted", count: trashed });
+  if (trashed || view().folderId === TRASH) rows.push({ id: TRASH, name: "recently deleted", count: trashed });
 
   els.folderList.replaceChildren(
     ...rows.map((r) => {
       const li = document.createElement("li");
       li.dataset.id = r.id;
       li.className = "folder";
-      if (r.id === db.view.folderId) li.classList.add("active");
+      if (r.id === view().folderId) li.classList.add("active");
       if (r.id === ALL || r.id === TRASH) li.classList.add("smart");
       const name = document.createElement("span");
       name.className = "name";
@@ -90,11 +120,11 @@ function renderFolders(): void {
 
 function renderNotes(): void {
   const notes = notesInView();
-  els.notesTitle.textContent = folderName(db.view.folderId);
+  els.notesTitle.textContent = folderName(view().folderId);
   if (!notes.length) {
     const li = document.createElement("li");
     li.className = "empty";
-    li.textContent = els.search.value ? "no matches" : db.view.folderId === TRASH ? "nothing here" : "no notes yet";
+    li.textContent = els.search.value ? "no matches" : view().folderId === TRASH ? "nothing here" : "no notes yet";
     els.noteList.replaceChildren(li);
     return;
   }
@@ -104,7 +134,7 @@ function renderNotes(): void {
       li.className = "note";
       li.dataset.id = n.id;
       li.draggable = !n.deletedAt;
-      if (n.id === db.view.noteId) li.classList.add("active");
+      if (n.id === currentId) li.classList.add("active");
       const title = document.createElement("div");
       title.className = "title";
       title.textContent = (n.pinned ? "* " : "") + noteTitle(n);
@@ -117,13 +147,12 @@ function renderNotes(): void {
       prev.className = "preview";
       prev.textContent = notePreview(n) || "no additional text";
       meta.append(date, prev);
-      if (db.view.folderId === ALL) {
+      li.append(title, meta);
+      if (view().folderId === ALL) {
         const f = document.createElement("div");
         f.className = "folder-tag";
         f.textContent = folderName(n.folderId);
-        li.append(title, meta, f);
-      } else {
-        li.append(title, meta);
+        li.append(f);
       }
       return li;
     }),
@@ -176,143 +205,206 @@ function applySettings(): void {
   editor?.refresh();
 }
 
-// ---------------------------------------------------------------- actions
+// ---------------------------------------------------------------- note actions
 
 function openNote(id: string | null, opts: { focus?: boolean } = {}): void {
-  db.view.noteId = id;
+  const prev = current();
+  if (prev && prev.id !== id && vault.discardIfBlank(prev)) renderFolders();
+  find.close(false);
+  currentId = id;
   const n = current();
   editor.load(n?.body ?? "", { readOnly: !n || !!n.deletedAt, caretAt: "end" });
   els.page.classList.toggle("empty", !n);
   resetLiveStats();
   renderNotes();
   renderStats();
-  persist();
+  saveState();
   if (opts.focus !== false && n) editor.focus();
 }
 
 function openFolder(id: string): void {
-  db.view.folderId = id;
+  view().folderId = id;
   els.search.value = "";
   const notes = notesInView();
-  const keep = notes.find((n) => n.id === db.view.noteId);
+  const keep = notes.find((n) => n.id === currentId);
   renderFolders();
   openNote(keep?.id ?? notes[0]?.id ?? null, { focus: false });
 }
 
 function newNote(): void {
-  const { folderId } = db.view;
-  const target = folderId === ALL || folderId === TRASH ? DEFAULT_FOLDER : folderId;
-  // Reuse an untouched empty note instead of piling them up.
-  const blank = db.notes.find((n) => !n.deletedAt && n.body.trim() === "" && n.folderId === target);
-  const now = Date.now();
-  const note = blank ?? { id: uid(), folderId: target, body: "", createdAt: now, updatedAt: now };
-  if (!blank) db.notes.push(note);
-  if (folderId === TRASH) db.view.folderId = target;
+  const folder = targetFolder();
+  const blank = vault.notes.find((n) => !n.deletedAt && !n.path && n.body.trim() === "" && n.folderId === folder);
+  const note = blank ?? vault.create(folder);
+  if (view().folderId === TRASH) view().folderId = folder;
   els.search.value = "";
   renderFolders();
   openNote(note.id);
 }
 
-async function newFolder(): Promise<void> {
-  const name = await palette.ask("folder name", "", focusEditor);
-  if (!name) return;
-  const f = { id: uid(), name, createdAt: Date.now() };
-  db.folders.push(f);
-  openFolder(f.id);
-  persist();
-}
-
-async function renameFolder(id: string): Promise<void> {
-  const f = db.folders.find((x) => x.id === id);
-  if (!f) return;
-  const name = await palette.ask(`rename "${f.name}"`, f.name, focusEditor);
-  if (!name) return;
-  f.name = name;
-  renderAll();
-  persist();
-}
-
-function deleteFolder(id: string): void {
-  if (id === DEFAULT_FOLDER) return;
-  const now = Date.now();
-  for (const n of db.notes) {
-    if (n.folderId === id) {
-      n.folderId = DEFAULT_FOLDER;
-      if (!n.deletedAt) n.deletedAt = now;
-    }
+function noteAction(fn: () => void, nextFrom?: Note[]): void {
+  const n = current();
+  fn();
+  // If the open note left this view, open its neighbour.
+  const after = notesInView();
+  if (nextFrom && n && !after.includes(n)) {
+    const i = nextFrom.indexOf(n);
+    const next = nextFrom.slice(i + 1).find((x) => after.includes(x)) ?? after.filter((x) => nextFrom.includes(x)).at(-1);
+    renderFolders();
+    openNote(next?.id ?? null);
+  } else {
+    renderAll();
   }
-  db.folders = db.folders.filter((f) => f.id !== id);
-  if (db.view.folderId === id) openFolder(ALL);
-  else renderAll();
-  persist();
 }
 
-function trashNote(id: string): void {
-  const n = db.notes.find((x) => x.id === id);
-  if (!n) return;
-  const list = notesInView();
-  const i = list.findIndex((x) => x.id === id);
-  if (n.body.trim() === "") db.notes = db.notes.filter((x) => x !== n);
-  else n.deletedAt = Date.now();
-  const next = list[i + 1] ?? list[i - 1];
-  renderFolders();
-  openNote(next && next.id !== id ? next.id : null);
-}
+const trashNote = (n: Note) => noteAction(() => vault.trash(n), notesInView());
+const destroyNote = (n: Note) => noteAction(() => vault.destroy(n), notesInView());
+const moveNote = (n: Note, folderId: string) => noteAction(() => vault.move(n, folderId), notesInView());
+const togglePin = (n: Note) => noteAction(() => vault.togglePin(n));
 
-function restoreNote(id: string): void {
-  const n = db.notes.find((x) => x.id === id);
-  if (!n) return;
-  delete n.deletedAt;
-  if (!db.folders.some((f) => f.id === n.folderId)) n.folderId = DEFAULT_FOLDER;
-  db.view.folderId = n.folderId;
+function restoreNote(n: Note): void {
+  vault.restore(n);
+  view().folderId = n.folderId;
   renderFolders();
   openNote(n.id);
 }
 
-function destroyNote(id: string): void {
-  const list = notesInView();
-  const i = list.findIndex((x) => x.id === id);
-  db.notes = db.notes.filter((x) => x.id !== id);
-  const next = list[i + 1] ?? list[i - 1];
-  renderFolders();
-  openNote(next?.id ?? null);
-}
-
 function emptyTrash(): void {
-  db.notes = db.notes.filter((n) => !n.deletedAt);
-  if (db.view.folderId === TRASH) openFolder(ALL);
+  vault.emptyTrash();
+  if (view().folderId === TRASH) openFolder(ALL);
   else renderAll();
-  persist();
-}
-
-function moveNote(id: string, folderId: string): void {
-  const n = db.notes.find((x) => x.id === id);
-  if (!n || n.deletedAt) return;
-  n.folderId = folderId;
-  renderAll();
-  persist();
-}
-
-function togglePin(id: string): void {
-  const n = db.notes.find((x) => x.id === id);
-  if (!n) return;
-  n.pinned = !n.pinned;
-  renderNotes();
-  persist();
 }
 
 function stepNote(dir: 1 | -1): void {
   const list = notesInView();
   if (!list.length) return;
-  const i = list.findIndex((n) => n.id === db.view.noteId);
-  const next = list[Math.min(list.length - 1, Math.max(0, i + dir))];
-  openNote(next.id);
+  const i = list.findIndex((n) => n.id === currentId);
+  openNote(list[Math.min(list.length - 1, Math.max(0, i + dir))].id);
 }
 
-function setSetting<K extends keyof DB["settings"]>(key: K, value: DB["settings"][K]): void {
-  db.settings[key] = value;
+// ---------------------------------------------------------------- folder actions
+
+async function newFolder(): Promise<void> {
+  const name = await palette.ask("folder name", "", focusEditor);
+  if (!name) return;
+  openFolder(vault.createFolder(name).id);
+}
+
+async function renameFolder(id: string): Promise<void> {
+  const f = vault.folders.find((x) => x.id === id);
+  if (!f || id === ROOT) return;
+  const name = await palette.ask(`rename "${f.name}"`, f.name, focusEditor);
+  if (!name) return;
+  const next = vault.renameFolder(id, name);
+  if (view().folderId === id) view().folderId = next;
+  renderAll();
+  saveState();
+}
+
+function deleteFolder(id: string): void {
+  vault.deleteFolder(id);
+  if (view().folderId === id) openFolder(ALL);
+  else {
+    if (current()?.deletedAt) openNote(notesInView()[0]?.id ?? null);
+    renderAll();
+  }
+}
+
+// ---------------------------------------------------------------- import / export / notes folder
+
+async function importFiles(): Promise<void> {
+  const files = await backend.pickImportFiles().catch((e) => (toast(`import failed: ${e}`), null));
+  if (!files?.length) return;
+  const folder = targetFolder();
+  const notes = vault.importFiles(folder, files);
+  if (view().folderId === TRASH) view().folderId = folder;
+  renderFolders();
+  openNote(notes[0].id);
+  toast(`imported ${notes.length} note${notes.length === 1 ? "" : "s"} into ${folderName(folder)}`);
+}
+
+async function importDir(): Promise<void> {
+  const dir = await backend.pickImportDir().catch((e) => (toast(`import failed: ${e}`), null));
+  if (!dir) return;
+  const { folder, count } = vault.importDir(dir);
+  openFolder(folder.id);
+  toast(`imported ${count} note${count === 1 ? "" : "s"} into ${folder.name}`);
+}
+
+async function exportNote(n: Note): Promise<void> {
+  await vault.flush();
+  const ok = await backend.exportNote(safeName(noteTitle(n)), n.body).catch((e) => (toast(`export failed: ${e}`), false));
+  if (ok) toast("note exported");
+}
+
+async function exportAll(): Promise<void> {
+  await vault.flush();
+  const files = vault.notes.filter((n) => !n.deletedAt && n.path).map((n) => ({ path: n.path, body: n.body }));
+  const dest = await backend.exportAll(files).catch((e) => (toast(`export failed: ${e}`), null));
+  if (dest) toast(`exported ${files.length} notes to ${dest}`);
+}
+
+async function openVault(root: string): Promise<void> {
+  if (vault) await vault.flush();
+  const next = new Vault(backend, root);
+  next.onError = (m) => toast(m);
+  await next.load();
+  vault = next;
+}
+
+async function changeNotesDir(dir: string | null): Promise<void> {
+  try {
+    await openVault(dir ?? (await backend.defaultRoot()));
+  } catch (e) {
+    toast(`couldn't open that folder: ${e}`);
+    return;
+  }
+  state.notesDir = dir;
+  view().folderId = ALL;
+  els.search.value = "";
+  currentId = null;
+  renderFolders();
+  openNote(notesInView()[0]?.id ?? null);
+  await writeState();
+  toast(`notes folder: ${vault.root}`);
+}
+
+async function pickNotesDir(): Promise<void> {
+  const dir = await backend.pickNotesDir();
+  if (dir) await changeNotesDir(dir);
+}
+
+/** Bring notes from the v0.1 single-file database into the notes folder. */
+function migrateLegacy(raw: string, freshState: boolean): number {
+  type OldNote = { folderId: string; body: string; pinned?: boolean; deletedAt?: number; createdAt?: number };
+  let old: { folders?: { id: string; name: string }[]; notes?: OldNote[]; settings?: Partial<Settings> };
+  try {
+    old = JSON.parse(raw);
+  } catch {
+    return 0;
+  }
+  if (freshState && old.settings) state.settings = { ...state.settings, ...old.settings };
+  const folderMap = new Map<string, string>([["notes", ROOT]]);
+  for (const f of old.folders ?? []) {
+    if (!folderMap.has(f.id)) folderMap.set(f.id, vault.createFolder(f.name).id);
+  }
+  let count = 0;
+  for (const o of old.notes ?? []) {
+    if (!o.body?.trim()) continue;
+    const n = vault.create(folderMap.get(o.folderId) ?? ROOT, o.body);
+    if (o.createdAt) n.createdAt = o.createdAt;
+    if (o.deletedAt) n.deletedAt = o.deletedAt;
+    if (o.pinned && !o.deletedAt) n.pinned = true;
+    count++;
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------- settings
+
+function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
+  state.settings[key] = value;
   applySettings();
-  persist();
+  saveState();
 }
 
 function focusEditor(): void {
@@ -360,57 +452,63 @@ function choice<T>(title: string, options: { label: string; value: T }[], get: (
   const original = get();
   return {
     title,
-    items: options.map((o) => ({
-      label: o.label,
-      active: o.value === original,
-      run: () => set(o.value),
-    })),
+    items: options.map((o) => ({ label: o.label, active: o.value === original, run: () => set(o.value) })),
   };
 }
 
 function themeMenu(): Menu {
   const original = settings().theme;
+  const active = findTheme(original).name;
   return {
-    title: "theme",
+    title: `theme (${themes.length})`,
     onCancel: () => applyTheme(findTheme(original)),
     items: themes.map((t) => ({
       label: t.name,
-      active: t.name === original,
+      active: t.name === active,
       preview: () => applyTheme(t),
       run: () => setSetting("theme", t.name),
     })),
   };
 }
 
+function randomTheme(): void {
+  const others = themes.filter((t) => t.name !== findTheme(settings().theme).name);
+  const t = others[Math.floor(Math.random() * others.length)];
+  setSetting("theme", t.name);
+  toast(`theme: ${t.name}`);
+}
+
 function noteCommands(n: Note): Command[] {
   if (n.deletedAt) {
     return [
-      { label: "restore note", run: () => restoreNote(n.id) },
-      { label: "delete note forever", run: () => destroyNote(n.id) },
+      { label: "restore note", run: () => restoreNote(n) },
+      { label: "delete note forever", run: () => destroyNote(n) },
     ];
   }
   return [
-    { label: n.pinned ? "unpin note" : "pin note", run: () => togglePin(n.id) },
+    { label: "find in note", hint: "ctrl+f", run: () => find.open() },
+    { label: n.pinned ? "unpin note" : "pin note", run: () => togglePin(n) },
     {
       label: "move note to",
       sub: () => ({
         title: "move to folder",
-        items: db.folders.map((f) => ({ label: f.name, active: f.id === n.folderId, run: () => moveNote(n.id, f.id) })),
+        items: vault.folders.map((f) => ({ label: f.name, active: f.id === n.folderId, run: () => moveNote(n, f.id) })),
       }),
     },
+    { label: "export note", hint: ".md", run: () => void exportNote(n) },
     { label: "copy note to clipboard", run: () => void navigator.clipboard.writeText(n.body) },
-    { label: "delete note", hint: "moves to recently deleted", run: () => trashNote(n.id) },
+    { label: "delete note", hint: "moves to recently deleted", run: () => trashNote(n) },
   ];
 }
 
 function folderCommands(id: string): Command[] {
-  const f = db.folders.find((x) => x.id === id);
   if (id === TRASH) return [{ label: "empty recently deleted", run: emptyTrash }];
-  if (!f) return [];
-  const cmds: Command[] = [{ label: `rename folder "${f.name}"`, run: () => void renameFolder(id) }];
-  if (id !== DEFAULT_FOLDER) {
-    const count = db.notes.filter((n) => n.folderId === id && !n.deletedAt).length;
-    cmds.push({
+  const f = vault.folders.find((x) => x.id === id);
+  if (!f || id === ROOT) return [];
+  const count = vault.notes.filter((n) => n.folderId === id && !n.deletedAt).length;
+  return [
+    { label: `rename folder "${f.name}"`, run: () => void renameFolder(id) },
+    {
       label: `delete folder "${f.name}"`,
       sub: () => ({
         title: count ? `delete "${f.name}" and move its ${count} notes to recently deleted?` : `delete "${f.name}"?`,
@@ -419,23 +517,22 @@ function folderCommands(id: string): Command[] {
           { label: "yes, delete", run: () => deleteFolder(id) },
         ],
       }),
-    });
-  }
-  return cmds;
+    },
+  ];
 }
 
 function jumpMenu(): Menu {
   return {
     title: "jump to note",
-    items: db.notes
+    items: vault.notes
       .filter((n) => !n.deletedAt)
       .sort(sortNotes)
       .map((n) => ({
         label: noteTitle(n),
         hint: folderName(n.folderId),
         run: () => {
-          if (db.view.folderId !== ALL && db.view.folderId !== n.folderId) {
-            db.view.folderId = ALL;
+          if (view().folderId !== ALL && view().folderId !== n.folderId) {
+            view().folderId = ALL;
             els.search.value = "";
             renderFolders();
           }
@@ -452,6 +549,7 @@ function rootMenu(): Menu {
     { label: "on", value: true },
     { label: "off", value: false },
   ];
+  const desktop = backend.desktop;
   const items: Command[] = [
     { label: "new note", hint: "ctrl+n", run: newNote },
     { label: "new folder", hint: "ctrl+shift+n", run: () => void newFolder() },
@@ -462,14 +560,22 @@ function rootMenu(): Menu {
         title: "folder",
         items: [
           { id: ALL, name: "all notes" },
-          ...db.folders,
-          ...(db.notes.some((x) => x.deletedAt) ? [{ id: TRASH, name: "recently deleted" }] : []),
-        ].map((f) => ({ label: f.name, active: f.id === db.view.folderId, run: () => openFolder(f.id) })),
+          ...vault.folders,
+          ...(vault.notes.some((x) => x.deletedAt) ? [{ id: TRASH, name: "recently deleted" }] : []),
+        ].map((f) => ({ label: f.name, active: f.id === view().folderId, run: () => openFolder(f.id) })),
       }),
     },
     ...(n ? noteCommands(n) : []),
-    ...folderCommands(db.view.folderId),
+    ...folderCommands(view().folderId),
+    { label: "import notes", hint: ".md / .txt", run: () => void importFiles() },
+    ...(desktop
+      ? [
+          { label: "import folder", run: () => void importDir() },
+          { label: "export all notes", run: () => void exportAll() },
+        ]
+      : []),
     { label: "theme", sub: themeMenu },
+    { label: "random theme", run: randomTheme },
     {
       label: "font size",
       hint: "ctrl+= / ctrl+-",
@@ -510,14 +616,15 @@ function rootMenu(): Menu {
     },
     { label: "spellcheck", sub: () => choice("spellcheck", onOff, () => s.spellcheck, (v) => setSetting("spellcheck", v)) },
     { label: s.zen ? "exit zen mode" : "zen mode", hint: "ctrl+\\", run: () => setSetting("zen", !s.zen) },
-    ...(storage.isTauri ? [{ label: "copy data folder path", run: () => void copyDataDir() }] : []),
+    ...(desktop
+      ? [
+          { label: "change notes folder", hint: vault.root, run: () => void pickNotesDir() },
+          ...(state.notesDir ? [{ label: "use default notes folder", run: () => void changeNotesDir(null) }] : []),
+          { label: "copy notes folder path", run: () => void navigator.clipboard.writeText(vault.root) },
+        ]
+      : []),
   ];
   return { title: "type to search", items };
-}
-
-async function copyDataDir(): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  await navigator.clipboard.writeText(await invoke<string>("data_dir"));
 }
 
 function openPalette(menu: Menu = rootMenu()): void {
@@ -558,6 +665,9 @@ function bindEvents(): void {
       if (settings().zen) setSetting("zen", false);
       els.search.focus();
       els.search.select();
+    } else if (mod(e) && k === "f") {
+      e.preventDefault();
+      if (current()) find.open();
     } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault();
       stepNote(e.key === "ArrowUp" ? -1 : 1);
@@ -579,46 +689,47 @@ function bindEvents(): void {
     ly = e.screenY;
   });
 
+  const rowId = (e: Event, _list: HTMLElement) =>
+    (e.target as HTMLElement).closest<HTMLElement>("li[data-id]")?.dataset.id;
+
   els.folderList.addEventListener("click", (e) => {
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (li) openFolder(li.dataset.id!);
+    const id = rowId(e, els.folderList);
+    if (id !== undefined) openFolder(id);
   });
   els.folderList.addEventListener("dblclick", (e) => {
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (li && db.folders.some((f) => f.id === li.dataset.id)) void renameFolder(li.dataset.id!);
+    const id = rowId(e, els.folderList);
+    if (id !== undefined && id !== ROOT && isRealFolder(id)) void renameFolder(id);
   });
   els.folderList.addEventListener("contextmenu", (e) => {
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (!li) return;
+    const id = rowId(e, els.folderList);
+    if (id === undefined) return;
     e.preventDefault();
-    const cmds = folderCommands(li.dataset.id!);
-    if (cmds.length) openPalette({ title: folderName(li.dataset.id!), items: cmds });
+    const cmds = folderCommands(id);
+    if (cmds.length) openPalette({ title: folderName(id), items: cmds });
   });
 
   els.noteList.addEventListener("click", (e) => {
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (li) openNote(li.dataset.id!);
+    const id = rowId(e, els.noteList);
+    if (id) openNote(id);
   });
   els.noteList.addEventListener("contextmenu", (e) => {
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (!li) return;
-    e.preventDefault();
-    const n = db.notes.find((x) => x.id === li.dataset.id);
+    const n = vault.get(rowId(e, els.noteList) ?? null);
     if (!n) return;
-    if (n.id !== db.view.noteId) openNote(n.id, { focus: false });
+    e.preventDefault();
+    if (n.id !== currentId) openNote(n.id, { focus: false });
     openPalette({ title: noteTitle(n), items: noteCommands(n) });
   });
 
   // drag a note onto a folder to move it
   els.noteList.addEventListener("dragstart", (e) => {
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (!li || !e.dataTransfer) return;
-    e.dataTransfer.setData("text/x-monkeynote", li.dataset.id!);
+    const id = rowId(e, els.noteList);
+    if (!id || !e.dataTransfer) return;
+    e.dataTransfer.setData("text/x-monkeynote", id);
     e.dataTransfer.effectAllowed = "move";
   });
   els.folderList.addEventListener("dragover", (e) => {
     const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    if (!li || !db.folders.some((f) => f.id === li.dataset.id)) return;
+    if (!li || !isRealFolder(li.dataset.id!)) return;
     e.preventDefault();
     els.folderList.querySelectorAll(".drop").forEach((x) => x.classList.remove("drop"));
     li.classList.add("drop");
@@ -629,18 +740,16 @@ function bindEvents(): void {
   els.folderList.addEventListener("drop", (e) => {
     e.preventDefault();
     els.folderList.querySelectorAll(".drop").forEach((x) => x.classList.remove("drop"));
-    const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-id]");
-    const id = e.dataTransfer?.getData("text/x-monkeynote");
-    if (li && id) moveNote(id, li.dataset.id!);
+    const folderId = rowId(e, els.folderList);
+    const n = vault.get(e.dataTransfer?.getData("text/x-monkeynote") ?? null);
+    if (n && folderId !== undefined && isRealFolder(folderId)) moveNote(n, folderId);
   });
 
   $("#new-note").addEventListener("click", newNote);
   $("#new-folder").addEventListener("click", () => void newFolder());
   $("#open-palette").addEventListener("click", () => openPalette());
 
-  els.search.addEventListener("input", () => {
-    renderNotes();
-  });
+  els.search.addEventListener("input", () => renderNotes());
   els.search.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === "ArrowDown") {
       e.preventDefault();
@@ -658,47 +767,90 @@ function bindEvents(): void {
     editor.focus();
   });
 
-  const flushNow = () => void storage.flush();
+  // Pick up edits made outside the app when the window comes back.
+  window.addEventListener("focus", async () => {
+    try {
+      const changed = await vault.reload(currentId);
+      const n = current();
+      if (!n) openNote(notesInView()[0]?.id ?? null, { focus: false });
+      else if (changed) editor.load(n.body, { caretAt: "end" });
+      renderAll();
+    } catch (e) {
+      toast(`couldn't read notes folder: ${e}`);
+    }
+  });
+
+  const flushNow = () => {
+    void vault.flush();
+    void writeState();
+  };
   window.addEventListener("beforeunload", flushNow);
   document.addEventListener("visibilitychange", flushNow);
 }
 
 async function bindWindowClose(): Promise<void> {
-  if (!storage.isTauri) return;
+  if (!backend.desktop) return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   // Make sure the last keystrokes hit the disk before the window goes away.
   await getCurrentWindow().onCloseRequested(async () => {
-    await storage.flush();
+    await Promise.all([vault.flush(), writeState()]);
   });
 }
 
 // ---------------------------------------------------------------- boot
 
 async function main(): Promise<void> {
-  db = await storage.load();
+  let rawState: string | null = null;
+  try {
+    rawState = await backend.loadState();
+  } catch (e) {
+    console.error(e);
+  }
+  state = normalizeState(rawState ? JSON.parse(rawState) : null);
+
+  try {
+    await openVault(state.notesDir ?? (await backend.defaultRoot()));
+  } catch (e) {
+    // The chosen folder is gone (e.g. an unplugged drive): fall back to the default.
+    state.notesDir = null;
+    await openVault(await backend.defaultRoot());
+    setTimeout(() => toast(`notes folder unavailable, using the default: ${e}`), 500);
+  }
+
+  const legacy = await backend.loadLegacy().catch(() => null);
+  if (legacy) {
+    const count = migrateLegacy(legacy, !rawState);
+    await vault.flush();
+    await backend.retireLegacy();
+    if (count) setTimeout(() => toast(`moved ${count} notes into ${vault.root}`), 500);
+  } else if (!rawState && !vault.notes.length) {
+    vault.create(ROOT, WELCOME);
+  }
+
   palette = new Palette($("#palette"));
   editor = new Editor($("#wrap"), els.scroller, {
     onChange: (value) => {
       const n = current();
       if (!n || n.deletedAt) return;
-      n.body = value;
-      n.updatedAt = Date.now();
+      vault.setBody(n, value);
+      find.refresh();
       renderStats();
       renderSoon();
-      persist();
     },
     onType,
   });
+  find = new Find($("#find"), editor, $("#highlights"), els.scroller);
 
   applySettings();
   bindEvents();
   void bindWindowClose();
 
-  if (!db.notes.some((n) => n.id === db.view.noteId && !n.deletedAt)) {
-    db.view.noteId = notesInView()[0]?.id ?? null;
-  }
+  if (!isRealFolder(view().folderId) && view().folderId !== ALL && view().folderId !== TRASH) view().folderId = ALL;
+  const last = vault.findByPath(view().notePath);
+  const start = last && !last.deletedAt ? last : notesInView()[0];
+  if (start && !notesInView().includes(start)) view().folderId = ALL;
   renderFolders();
-  openNote(db.view.noteId);
+  openNote(start?.id ?? null);
   document.body.classList.add("ready");
 }
 

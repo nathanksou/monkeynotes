@@ -634,3 +634,97 @@ kbd {
     pointer-events: none;
   }
 }
+
+/* ------------------------------------------------------------ find in note */
+
+#find {
+  position: absolute;
+  top: 0.6rem;
+  right: 4.5rem;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.8rem;
+  background: var(--sub-alt);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  animation: fade-in 100ms ease-out;
+}
+
+#find[hidden] {
+  display: none;
+}
+
+#find input {
+  width: 14rem;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  caret-color: var(--caret);
+}
+
+#find input::placeholder {
+  color: var(--sub);
+}
+
+#find.none input {
+  color: var(--error);
+}
+
+.find-count {
+  color: var(--sub);
+  min-width: 3ch;
+  font-variant-numeric: tabular-nums;
+}
+
+#find .ghost {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.3rem;
+}
+
+#highlights {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: transparent;
+  pointer-events: none;
+}
+
+#highlights mark {
+  color: transparent;
+  background: color-mix(in srgb, var(--main) 25%, transparent);
+  border-radius: 0.15em;
+}
+
+#highlights mark.current {
+  background: color-mix(in srgb, var(--main) 60%, transparent);
+}
+
+#editor {
+  position: relative;
+}
+
+/* ------------------------------------------------------------ toast */
+
+#toast {
+  position: fixed;
+  bottom: 3.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: min(90vw, 640px);
+  padding: 0.6rem 1rem;
+  background: var(--sub-alt);
+  color: var(--text);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  animation: fade-in 150ms ease-out;
+}
+
+#toast[hidden] {
+  display: none;
+}
