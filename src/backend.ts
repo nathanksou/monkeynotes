@@ -2,12 +2,16 @@
  * Everything that touches the disk. The desktop app talks to the Rust commands
  * in src-tauri/src/lib.rs; `npm run dev` in a browser uses a small in-memory
  * file system persisted to localStorage so the UI can be worked on without Tauri.
+ *
+ * Paths here are always relative to the notes folder. The notes folder itself,
+ * and any file outside it, is chosen through native dialogs on the Rust side.
  */
 import { invoke } from "@tauri-apps/api/core";
 
 export interface FileEntry {
   path: string;
-  body: string;
+  /** null when the file hasn't changed since the modified time we passed in */
+  body: string | null;
   created: number;
   modified: number;
 }
@@ -36,25 +40,31 @@ export interface Backend {
   saveState(contents: string): Promise<void>;
   loadLegacy(): Promise<string | null>;
   retireLegacy(): Promise<void>;
-  defaultRoot(): Promise<string>;
 
-  scan(root: string): Promise<Scan>;
-  write(root: string, path: string, contents: string): Promise<void>;
-  rename(root: string, from: string, to: string): Promise<void>;
-  remove(root: string, path: string): Promise<void>;
-  mkdir(root: string, path: string): Promise<void>;
-  rmdir(root: string, path: string): Promise<void>;
+  notesDir(): Promise<string>;
+  /** Ask the user for a new notes folder. Null if cancelled. */
+  chooseNotesDir(): Promise<string | null>;
+  /** Go back to the default folder (only until restart if `persist` is false). */
+  resetNotesDir(persist: boolean): Promise<string>;
+
+  /** `known` maps paths to modified times; matching files come back without a body. */
+  scan(known?: Record<string, number>): Promise<Scan>;
+  /** With `createNew`, fails with EEXIST instead of replacing an existing file. */
+  write(path: string, contents: string, createNew: boolean): Promise<void>;
+  /** Fails with EEXIST instead of replacing an existing file. */
+  rename(from: string, to: string): Promise<void>;
+  remove(path: string): Promise<void>;
+  mkdir(path: string): Promise<void>;
+  rmdir(path: string): Promise<void>;
 
   /** Ask the user for note files to import. Null if cancelled. */
-  pickImportFiles(): Promise<ExtFile[] | null>;
+  importFiles(): Promise<ExtFile[] | null>;
   /** Ask the user for a folder to import. Null if cancelled (or unsupported). */
-  pickImportDir(): Promise<ExtDir | null>;
+  importDir(): Promise<ExtDir | null>;
   /** Save one note somewhere the user chooses. Returns false if cancelled. */
-  exportNote(suggestedName: string, body: string): Promise<boolean>;
-  /** Copy every note into a folder the user chooses. Null if cancelled. */
+  exportNote(name: string, body: string): Promise<boolean>;
+  /** Copy notes into a new folder the user chooses. Null if cancelled (or unsupported). */
   exportAll(files: { path: string; body: string }[]): Promise<string | null>;
-  /** Ask the user for a new notes folder. */
-  pickNotesDir(): Promise<string | null>;
 }
 
 // ------------------------------------------------------------------ desktop
@@ -66,62 +76,27 @@ class TauriBackend implements Backend {
   saveState = (contents: string) => invoke<void>("save_state", { contents });
   loadLegacy = () => invoke<string | null>("load_legacy");
   retireLegacy = () => invoke<void>("retire_legacy");
-  defaultRoot = () => invoke<string>("default_root");
 
-  scan = (root: string) => invoke<Scan>("scan", { root });
-  write = (root: string, path: string, contents: string) => invoke<void>("write_file", { root, path, contents });
-  rename = (root: string, from: string, to: string) => invoke<void>("rename_path", { root, from, to });
-  remove = (root: string, path: string) => invoke<void>("remove_file", { root, path });
-  mkdir = (root: string, path: string) => invoke<void>("make_dir", { root, path });
-  rmdir = (root: string, path: string) => invoke<void>("remove_dir", { root, path });
+  notesDir = () => invoke<string>("notes_dir");
+  chooseNotesDir = () => invoke<string | null>("choose_notes_dir");
+  resetNotesDir = (persist: boolean) => invoke<string>("reset_notes_dir", { persist });
 
-  async pickImportFiles(): Promise<ExtFile[] | null> {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const picked = await open({
-      multiple: true,
-      title: "import notes",
-      filters: [{ name: "notes", extensions: ["md", "markdown", "txt"] }],
+  scan = (known?: Record<string, number>) => invoke<Scan>("scan", { known: known ?? null });
+  write = (path: string, contents: string, createNew: boolean) =>
+    invoke<void>("write_file", { path, contents, createNew });
+  rename = (from: string, to: string) => invoke<void>("rename_path", { from, to });
+  remove = (path: string) => invoke<void>("remove_file", { path });
+  mkdir = (path: string) => invoke<void>("make_dir", { path });
+  rmdir = (path: string) => invoke<void>("remove_dir", { path });
+
+  importFiles = () => invoke<ExtFile[] | null>("import_files");
+  importDir = () => invoke<ExtDir | null>("import_dir");
+  exportNote = (name: string, contents: string) => invoke<boolean>("export_note", { name, contents });
+  exportAll = (files: { path: string; body: string }[]) =>
+    invoke<string | null>("export_all", {
+      folderName: `monkeynotes-export-${new Date().toISOString().slice(0, 10)}`,
+      files,
     });
-    if (!picked || !picked.length) return null;
-    return invoke<ExtFile[]>("read_external", { paths: picked });
-  }
-
-  async pickImportDir(): Promise<ExtDir | null> {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const picked = await open({ directory: true, title: "import a folder of notes" });
-    if (!picked) return null;
-    return invoke<ExtDir>("read_external_dir", { path: picked });
-  }
-
-  async exportNote(suggestedName: string, body: string): Promise<boolean> {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const path = await save({
-      title: "export note",
-      defaultPath: `${suggestedName}.md`,
-      filters: [{ name: "markdown", extensions: ["md"] }],
-    });
-    if (!path) return false;
-    await invoke("write_external", { path, contents: body });
-    return true;
-  }
-
-  async exportAll(files: { path: string; body: string }[]): Promise<string | null> {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const dest = await open({ directory: true, title: "export all notes into..." });
-    if (!dest) return null;
-    const stamp = new Date().toISOString().slice(0, 10);
-    const sep = dest.includes("\\") && !dest.includes("/") ? "\\" : "/";
-    const base = `${dest}${sep}monkeynotes-export-${stamp}`;
-    for (const f of files) {
-      await invoke("write_external", { path: `${base}${sep}${f.path.split("/").join(sep)}`, contents: f.body });
-    }
-    return base;
-  }
-
-  async pickNotesDir(): Promise<string | null> {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    return (await open({ directory: true, title: "choose a notes folder" })) ?? null;
-  }
 }
 
 // ------------------------------------------------------------------ browser (dev)
@@ -163,24 +138,32 @@ class BrowserBackend implements Backend {
   async retireLegacy() {
     localStorage.removeItem("monkeynotes:db");
   }
-  async defaultRoot() {
-    return "browser";
+  async notesDir() {
+    return "browser storage";
+  }
+  async chooseNotesDir() {
+    return null;
+  }
+  async resetNotesDir() {
+    return "browser storage";
   }
 
-  async scan(): Promise<Scan> {
+  async scan(known: Record<string, number> = {}): Promise<Scan> {
     const files = Object.entries(this.files)
       .filter(([p]) => p !== ".monkeynotes.json")
-      .map(([path, f]) => ({ path, ...f }));
+      .map(([path, f]) => ({ path, ...f, body: known[path] === f.modified ? null : f.body }));
     return { dirs: [...this.dirs].sort(), files, meta: this.files[".monkeynotes.json"]?.body ?? null };
   }
-  async write(_root: string, path: string, body: string) {
+  async write(path: string, body: string, createNew: boolean) {
+    if (createNew && this.files[path]) throw `EEXIST: ${path}`;
     const now = Date.now();
     this.files[path] = { body, created: this.files[path]?.created ?? now, modified: now };
     this.persist();
   }
-  async rename(_root: string, from: string, to: string) {
+  async rename(from: string, to: string) {
+    const swap = (p: string) => (p === from ? to : p.startsWith(from + "/") ? to + p.slice(from.length) : p);
     if (this.dirs.includes(from)) {
-      const swap = (p: string) => (p === from ? to : p.startsWith(from + "/") ? to + p.slice(from.length) : p);
+      if (this.dirs.includes(to)) throw `EEXIST: ${to}`;
       this.dirs = this.dirs.map(swap);
       for (const p of Object.keys(this.files)) {
         const next = swap(p);
@@ -190,17 +173,17 @@ class BrowserBackend implements Backend {
         }
       }
     } else {
-      if (this.files[to] && from.toLowerCase() !== to.toLowerCase()) throw new Error(`${to} already exists`);
+      if (this.files[to] && from !== to) throw `EEXIST: ${to}`;
       this.files[to] = this.files[from];
       delete this.files[from];
     }
     this.persist();
   }
-  async remove(_root: string, path: string) {
+  async remove(path: string) {
     delete this.files[path];
     this.persist();
   }
-  async mkdir(_root: string, path: string) {
+  async mkdir(path: string) {
     if (path.startsWith(".")) return;
     const parts = path.split("/");
     for (let i = 1; i <= parts.length; i++) {
@@ -209,14 +192,14 @@ class BrowserBackend implements Backend {
     }
     this.persist();
   }
-  async rmdir(_root: string, path: string) {
+  async rmdir(path: string) {
     const inside = (p: string) => p.startsWith(path + "/");
     if (Object.keys(this.files).some(inside) || this.dirs.some(inside)) throw new Error("folder not empty");
     this.dirs = this.dirs.filter((d) => d !== path);
     this.persist();
   }
 
-  pickImportFiles(): Promise<ExtFile[] | null> {
+  importFiles(): Promise<ExtFile[] | null> {
     return new Promise((resolve) => {
       const input = document.createElement("input");
       input.type = "file";
@@ -234,7 +217,7 @@ class BrowserBackend implements Backend {
       input.click();
     });
   }
-  async pickImportDir() {
+  async importDir() {
     return null;
   }
   async exportNote(name: string, body: string) {
@@ -246,9 +229,6 @@ class BrowserBackend implements Backend {
     return true;
   }
   async exportAll() {
-    return null;
-  }
-  async pickNotesDir() {
     return null;
   }
 }

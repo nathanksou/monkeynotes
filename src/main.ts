@@ -5,6 +5,7 @@ import "./styles.css";
 import { backend } from "./backend";
 import { Editor } from "./editor";
 import { spawnEffect } from "./effects";
+import { isNotFound } from "./errors";
 import { Find } from "./find";
 import { linkAt, linkRanges } from "./links";
 import {
@@ -30,7 +31,8 @@ import {
 } from "./model";
 import { type Command, type Menu, Palette } from "./palette";
 import { type KeyType, playKey } from "./sound";
-import { TypingStats, dayKey, formatDuration } from "./stats";
+import { TypingStats, formatDuration } from "./stats";
+import { renderStatsView } from "./stats-view";
 import { applyTheme, findTheme, themes } from "./themes";
 import { VERSION, checkForUpdate } from "./updates";
 import { Vault, safeName } from "./vault";
@@ -60,6 +62,8 @@ let palette: Palette;
 let find: Find;
 let currentId: string | null = null;
 let stats: TypingStats;
+/** Where the notes folder is, for display. */
+let notesDirPath = "";
 
 // ---------------------------------------------------------------- state helpers
 
@@ -150,6 +154,37 @@ function renderFolders(): void {
   );
 }
 
+/** Note ids in the order the list currently shows them. */
+let renderedOrder: string[] = [];
+
+function noteRow(n: Note): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = "note";
+  li.dataset.id = n.id;
+  li.draggable = !n.deletedAt;
+  if (n.id === currentId) li.classList.add("active");
+  const title = document.createElement("div");
+  title.className = "title";
+  title.textContent = (n.pinned ? "* " : "") + noteTitle(n);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const date = document.createElement("span");
+  date.className = "date";
+  date.textContent = formatDate(n.updatedAt);
+  const prev = document.createElement("span");
+  prev.className = "preview";
+  prev.textContent = notePreview(n) || "no additional text";
+  meta.append(date, prev);
+  li.append(title, meta);
+  if (view().folderId === ALL) {
+    const f = document.createElement("div");
+    f.className = "folder-tag";
+    f.textContent = folderPath(n.folderId);
+    li.append(f);
+  }
+  return li;
+}
+
 function renderNotes(): void {
   const notes = notesInView();
   els.notesTitle.textContent = folderName(view().folderId);
@@ -158,37 +193,11 @@ function renderNotes(): void {
     li.className = "empty";
     li.textContent = els.search.value ? "no matches" : view().folderId === TRASH ? "nothing here" : "no notes yet";
     els.noteList.replaceChildren(li);
+    renderedOrder = [];
     return;
   }
-  els.noteList.replaceChildren(
-    ...notes.map((n) => {
-      const li = document.createElement("li");
-      li.className = "note";
-      li.dataset.id = n.id;
-      li.draggable = !n.deletedAt;
-      if (n.id === currentId) li.classList.add("active");
-      const title = document.createElement("div");
-      title.className = "title";
-      title.textContent = (n.pinned ? "* " : "") + noteTitle(n);
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      const date = document.createElement("span");
-      date.className = "date";
-      date.textContent = formatDate(n.updatedAt);
-      const prev = document.createElement("span");
-      prev.className = "preview";
-      prev.textContent = notePreview(n) || "no additional text";
-      meta.append(date, prev);
-      li.append(title, meta);
-      if (view().folderId === ALL) {
-        const f = document.createElement("div");
-        f.className = "folder-tag";
-        f.textContent = folderPath(n.folderId);
-        li.append(f);
-      }
-      return li;
-    }),
-  );
+  els.noteList.replaceChildren(...notes.map(noteRow));
+  renderedOrder = notes.map((n) => n.id);
   els.noteList.querySelector("li.active")?.scrollIntoView({ block: "nearest" });
 }
 
@@ -202,12 +211,19 @@ function renderStats(): void {
 }
 
 let listTimer = 0;
+/** After typing: refresh just the open note's row, unless the list order changed. */
 function renderSoon(): void {
   clearTimeout(listTimer);
   listTimer = window.setTimeout(() => {
-    renderNotes();
-    renderFolders();
-  }, 120);
+    const order = notesInView().map((n) => n.id);
+    const n = current();
+    const row = n && els.noteList.querySelector(`li[data-id="${n.id}"]`);
+    if (n && row && order.length === renderedOrder.length && order.every((id, i) => id === renderedOrder[i])) {
+      row.replaceWith(noteRow(n));
+    } else {
+      renderNotes();
+    }
+  }, 150);
 }
 
 function renderAll(): void {
@@ -376,7 +392,7 @@ function deleteFolder(id: string): void {
 // ---------------------------------------------------------------- import / export / notes folder
 
 async function importFiles(): Promise<void> {
-  const files = await backend.pickImportFiles().catch((e) => (toast(`import failed: ${e}`), null));
+  const files = await backend.importFiles().catch((e: unknown) => (toast(`import failed: ${e}`), null));
   if (!files?.length) return;
   const folder = targetFolder();
   const notes = vault.importFiles(folder, files);
@@ -387,7 +403,7 @@ async function importFiles(): Promise<void> {
 }
 
 async function importDir(): Promise<void> {
-  const dir = await backend.pickImportDir().catch((e) => (toast(`import failed: ${e}`), null));
+  const dir = await backend.importDir().catch((e: unknown) => (toast(`import failed: ${e}`), null));
   if (!dir) return;
   const { folder, count } = vault.importDir(dir);
   openFolder(folder.id);
@@ -407,35 +423,38 @@ async function exportAll(): Promise<void> {
   if (dest) toast(`exported ${files.length} notes to ${dest}`);
 }
 
-async function openVault(root: string): Promise<void> {
+/** Load the current notes folder into a fresh vault. Throws if it can't be read. */
+async function openVault(): Promise<void> {
   if (vault) await vault.flush();
-  const next = new Vault(backend, root);
-  next.onError = (m) => toast(m);
+  const next = new Vault(backend);
+  next.onError = (m) => toast(m, undefined, 6000);
   next.titleFromFile = settings().titleSource === "file name";
   await next.load();
   vault = next;
+  notesDirPath = await backend.notesDir();
 }
 
-async function changeNotesDir(dir: string | null): Promise<void> {
+/** Switch notes folders (`choose`: ask the user; otherwise go back to the default). */
+async function changeNotesDir(choose: boolean): Promise<void> {
   try {
-    await openVault(dir ?? (await backend.defaultRoot()));
+    if (vault) await vault.flush();
+    if (choose) {
+      if (!(await backend.chooseNotesDir())) return;
+    } else {
+      await backend.resetNotesDir(true);
+    }
+    await openVault();
   } catch (e) {
     toast(`couldn't open that folder: ${e}`);
     return;
   }
-  state.notesDir = dir;
   view().folderId = ALL;
   els.search.value = "";
   currentId = null;
   renderFolders();
   openNote(notesInView()[0]?.id ?? null);
   await writeState();
-  toast(`notes folder: ${vault.root}`);
-}
-
-async function pickNotesDir(): Promise<void> {
-  const dir = await backend.pickNotesDir();
-  if (dir) await changeNotesDir(dir);
+  toast(`notes folder: ${notesDirPath}`);
 }
 
 /** Bring notes from the v0.1 single-file database into the notes folder. */
@@ -454,7 +473,8 @@ function migrateLegacy(raw: string, freshState: boolean): number {
   }
   let count = 0;
   for (const o of old.notes ?? []) {
-    if (!o.body?.trim()) continue;
+    // skip blanks, and notes a previous (partly failed) migration already brought over
+    if (!o.body?.trim() || vault.notes.some((n) => n.body === o.body)) continue;
     const n = vault.create(folderMap.get(o.folderId) ?? ROOT, o.body);
     if (o.createdAt) n.createdAt = o.createdAt;
     if (o.deletedAt) n.deletedAt = o.deletedAt;
@@ -488,6 +508,8 @@ function onType(chars: number): void {
   saveState();
 }
 
+let lastStatsKey = "";
+
 /** The always-visible stats bar under the editor (it stays put in focus mode). */
 function renderStatsBar(): void {
   if (!settings().liveStats) return;
@@ -500,7 +522,10 @@ function renderStatsBar(): void {
     [formatDuration(today.ms), "typing today"],
     [String(stats.average()), "avg wpm"],
   ];
-  if (streak) parts.push([String(streak), streak === 1 ? "day streak" : "day streak"]);
+  if (streak) parts.push([String(streak), "day streak"]);
+  const key = JSON.stringify(parts);
+  if (key === lastStatsKey) return;
+  lastStatsKey = key;
   els.statsBar.replaceChildren(
     ...parts.map(([value, label, cls]) => {
       const item = document.createElement("span");
@@ -515,59 +540,7 @@ function renderStatsBar(): void {
 setInterval(() => stats && renderStatsBar(), 250);
 
 function showStats(): void {
-  const t = stats.totals();
-  const today = stats.today();
-  const days = stats.recent(14);
-  const max = Math.max(1, ...days.map((d) => d.stats?.chars ?? 0));
-  const box = document.createElement("div");
-  box.className = "stats-box";
-  const h = document.createElement("h2");
-  h.textContent = "typing stats";
-  const grid = document.createElement("div");
-  grid.className = "stats-grid";
-  const cell = (value: string, label: string) => {
-    const c = document.createElement("div");
-    const v = document.createElement("div");
-    v.className = "big";
-    v.textContent = value;
-    const l = document.createElement("div");
-    l.className = "label";
-    l.textContent = label;
-    c.append(l, v);
-    return c;
-  };
-  grid.append(
-    cell(String(Math.round(today.chars / 5)), "words today"),
-    cell(formatDuration(today.ms), "typing today"),
-    cell(String(today.best || "-"), "best wpm today"),
-    cell(String(stats.streak()), "day streak"),
-    cell(String(stats.average()), "avg wpm (30 days)"),
-    cell(String(t.best || "-"), "best wpm ever"),
-    cell(t.words.toLocaleString(), "words all time"),
-    cell(formatDuration(t.ms), "typing all time"),
-  );
-  const chart = document.createElement("div");
-  chart.className = "stats-chart";
-  for (const d of days) {
-    const col = document.createElement("div");
-    col.className = "col";
-    if (d.key === dayKey()) col.classList.add("today");
-    const words = Math.round((d.stats?.chars ?? 0) / 5);
-    col.title = `${d.day.toLocaleDateString()} · ${words} words · ${formatDuration(d.stats?.ms ?? 0)}`;
-    const bar = document.createElement("div");
-    bar.className = "bar";
-    bar.style.height = `${((d.stats?.chars ?? 0) / max) * 100}%`;
-    const lbl = document.createElement("div");
-    lbl.className = "day";
-    lbl.textContent = d.day.toLocaleDateString([], { weekday: "narrow" });
-    col.append(bar, lbl);
-    chart.append(col);
-  }
-  const foot = document.createElement("div");
-  foot.className = "stats-foot";
-  foot.textContent = "words = characters / 5 · only active typing time counts · esc to close";
-  box.append(h, grid, chart, foot);
-  els.statsView.replaceChildren(box);
+  els.statsView.replaceChildren(renderStatsView(stats));
   els.statsView.hidden = false;
 }
 
@@ -893,9 +866,9 @@ function rootMenu(): Menu {
     { label: s.zen ? "exit zen mode" : "zen mode", hint: "ctrl+\\", run: () => setSetting("zen", !s.zen) },
     ...(desktop
       ? [
-          { label: "change notes folder", hint: vault.root, run: () => void pickNotesDir() },
-          ...(state.notesDir ? [{ label: "use default notes folder", run: () => void changeNotesDir(null) }] : []),
-          { label: "copy notes folder path", run: () => void navigator.clipboard.writeText(vault.root) },
+          { label: "change notes folder", hint: notesDirPath, run: () => void changeNotesDir(true) },
+          { label: "use default notes folder", run: () => void changeNotesDir(false) },
+          { label: "copy notes folder path", run: () => void navigator.clipboard.writeText(notesDirPath) },
           { label: "check for updates", hint: `v${VERSION}`, run: () => void checkUpdates(true) },
           {
             label: "check for updates on launch",
@@ -980,21 +953,20 @@ function bindEvents(): void {
     ly = e.screenY;
   });
 
-  const rowId = (e: Event, _list: HTMLElement) =>
-    (e.target as HTMLElement).closest<HTMLElement>("li[data-id]")?.dataset.id;
+  const rowId = (e: Event) => (e.target as HTMLElement).closest<HTMLElement>("li[data-id]")?.dataset.id;
 
   els.folderList.addEventListener("click", (e) => {
     const toggle = (e.target as HTMLElement).closest<HTMLElement>("[data-toggle]");
     if (toggle) return toggleCollapsed(toggle.dataset.toggle!);
-    const id = rowId(e, els.folderList);
+    const id = rowId(e);
     if (id !== undefined) openFolder(id);
   });
   els.folderList.addEventListener("dblclick", (e) => {
-    const id = rowId(e, els.folderList);
+    const id = rowId(e);
     if (id !== undefined && id !== ROOT && isRealFolder(id)) void renameFolder(id);
   });
   els.folderList.addEventListener("contextmenu", (e) => {
-    const id = rowId(e, els.folderList);
+    const id = rowId(e);
     if (id === undefined) return;
     e.preventDefault();
     const cmds = folderCommands(id);
@@ -1002,11 +974,11 @@ function bindEvents(): void {
   });
 
   els.noteList.addEventListener("click", (e) => {
-    const id = rowId(e, els.noteList);
+    const id = rowId(e);
     if (id) openNote(id);
   });
   els.noteList.addEventListener("contextmenu", (e) => {
-    const n = vault.get(rowId(e, els.noteList) ?? null);
+    const n = vault.get(rowId(e) ?? null);
     if (!n) return;
     e.preventDefault();
     if (n.id !== currentId) openNote(n.id, { focus: false });
@@ -1015,7 +987,7 @@ function bindEvents(): void {
 
   // drag a note onto a folder to move it
   els.noteList.addEventListener("dragstart", (e) => {
-    const id = rowId(e, els.noteList);
+    const id = rowId(e);
     if (!id || !e.dataTransfer) return;
     e.dataTransfer.setData("text/x-monkeynote", id);
     e.dataTransfer.effectAllowed = "move";
@@ -1033,7 +1005,7 @@ function bindEvents(): void {
   els.folderList.addEventListener("drop", (e) => {
     e.preventDefault();
     els.folderList.querySelectorAll(".drop").forEach((x) => x.classList.remove("drop"));
-    const folderId = rowId(e, els.folderList);
+    const folderId = rowId(e);
     const n = vault.get(e.dataTransfer?.getData("text/x-monkeynote") ?? null);
     if (n && folderId !== undefined && isRealFolder(folderId)) moveNote(n, folderId);
   });
@@ -1087,7 +1059,12 @@ function bindEvents(): void {
   });
 
   // Pick up edits made outside the app when the window comes back.
+  let reloading = false;
+  let lastReload = 0;
   window.addEventListener("focus", async () => {
+    if (reloading || Date.now() - lastReload < 1500) return;
+    reloading = true;
+    lastReload = Date.now();
     try {
       const changed = await vault.reload(currentId);
       const n = current();
@@ -1096,6 +1073,8 @@ function bindEvents(): void {
       renderAll();
     } catch (e) {
       toast(`couldn't read notes folder: ${e}`);
+    } finally {
+      reloading = false;
     }
   });
 
@@ -1125,24 +1104,40 @@ async function main(): Promise<void> {
   } catch (e) {
     console.error(e);
   }
-  state = normalizeState(rawState ? JSON.parse(rawState) : null);
+  let parsed: unknown = null;
+  try {
+    parsed = rawState ? JSON.parse(rawState) : null;
+  } catch (e) {
+    console.error("settings file is unreadable, using defaults", e);
+    rawState = null;
+  }
+  state = normalizeState(parsed);
   stats = new TypingStats(state.stats);
 
   try {
-    await openVault(state.notesDir ?? (await backend.defaultRoot()));
+    await openVault();
   } catch (e) {
-    // The chosen folder is gone (e.g. an unplugged drive): fall back to the default.
-    state.notesDir = null;
-    await openVault(await backend.defaultRoot());
-    setTimeout(() => toast(`notes folder unavailable, using the default: ${e}`), 500);
+    if (!isNotFound(e)) throw e;
+    // The chosen folder is missing (e.g. an unplugged drive). Use the default
+    // folder for this session only, so the choice comes back with the drive.
+    await backend.resetNotesDir(false);
+    await openVault();
+    const missing = String(e).replace(/^NOT_FOUND:\s*/, "");
+    setTimeout(() => toast(`notes folder not found: ${missing}. using ${notesDirPath} until next launch`, undefined, 10000), 500);
   }
 
   const legacy = await backend.loadLegacy().catch(() => null);
   if (legacy) {
+    const before = vault.failures;
     const count = migrateLegacy(legacy, !rawState);
     await vault.flush();
-    await backend.retireLegacy();
-    if (count) setTimeout(() => toast(`moved ${count} notes into ${vault.root}`), 500);
+    if (vault.failures === before) {
+      await backend.retireLegacy();
+      if (count) setTimeout(() => toast(`moved ${count} notes into ${notesDirPath}`), 500);
+    } else {
+      // Keep notes.json so the move is tried again next launch.
+      setTimeout(() => toast("couldn't move your v0.1 notes yet; they're safe and will be retried next launch"), 500);
+    }
   } else if (!rawState && !vault.notes.length) {
     vault.create(ROOT, WELCOME);
   }

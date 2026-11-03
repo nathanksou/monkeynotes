@@ -55,6 +55,9 @@ monkeynotes/
 - Prefer file names as titles? Set `note titles` to `file name` in the command line. Files are then never renamed automatically.
 - Edits made outside the app show up when you switch back to it.
 - Every write goes to a temp file first and is then renamed into place, so a crash can't leave a half-written note.
+- monkeynotes never overwrites a file it didn't create. If a note's name is already taken on disk, by a file synced in from elsewhere, say, it picks the next free name (`todo 2.md`).
+- If a save fails (for example, the disk is full), your text stays in the app and is retried. It's never replaced by the older copy on disk.
+- If your chosen notes folder is missing at launch (an unplugged drive, say), monkeynotes uses the default folder for that session and leaves your choice alone. It doesn't create an empty stand-in folder.
 
 ### using an obsidian vault
 
@@ -83,9 +86,11 @@ src/
   main.ts               app state, rendering, shortcuts, commands
   vault.ts              notes folder in memory, synced to disk (naming, trash, folders)
   backend.ts            disk access: Tauri commands, or localStorage in the browser
+  errors.ts             error codes shared with the Rust side
   editor.ts             textarea with the custom smooth caret
   find.ts               find in note
   stats.ts              typing stats (wpm, streaks, daily totals)
+  stats-view.ts         the full stats view
   sound.ts              synthesized key sounds
   effects.ts            typing animations
   links.ts              [[link]] parsing
@@ -99,6 +104,10 @@ tests/                  vitest unit tests
 src-tauri/
   src/lib.rs            file-system commands (scan, atomic write, rename, import/export)
 ```
+
+### security model
+
+The UI runs in a webview and never handles absolute paths. The Rust side owns the notes folder: it's chosen in a native folder dialog and remembered there. Every note path from the UI is relative and checked so it can't leave that folder. Files outside it are only read or written through native open and save dialogs. The webview can't call the dialog or file-system plugins directly, and it can only open links to this repo. All file commands run off the main thread.
 
 ### releases
 

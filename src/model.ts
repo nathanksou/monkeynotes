@@ -61,8 +61,6 @@ export interface Settings {
 
 export interface AppState {
   version: 2;
-  /** Absolute path of the notes folder; null means the default location. */
-  notesDir: string | null;
   settings: Settings;
   /** UI state restored on launch. */
   view: { folderId: string; notePath: string | null; collapsed: string[] };
@@ -123,7 +121,6 @@ export function normalizeState(raw: unknown): AppState {
   const st = (raw && typeof raw === "object" ? raw : {}) as Partial<AppState>;
   return {
     version: 2,
-    notesDir: typeof st.notesDir === "string" ? st.notesDir : null,
     settings: { ...defaultSettings, ...(st.settings ?? {}) },
     view: { folderId: ALL, notePath: null, collapsed: [], ...(st.view ?? {}) },
     stats: st.stats && typeof st.stats === "object" && st.stats.days ? st.stats : { days: {} },

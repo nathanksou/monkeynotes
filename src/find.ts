@@ -10,6 +10,7 @@ export class Find {
   private input: HTMLInputElement;
   private count: HTMLElement;
   private matches: number[] = [];
+  private lengths: number[] = [];
   private index = -1;
 
   constructor(
@@ -55,9 +56,10 @@ export class Find {
     if (!this.isOpen) return;
     this.root.hidden = true;
     const start = this.matches[this.index];
+    const len = this.lengths[this.index];
     this.layer.replaceChildren();
     if (!focusEditor) return;
-    if (start !== undefined) this.editor.select(start, start + this.input.value.length);
+    if (start !== undefined) this.editor.select(start, start + len);
     this.editor.focus();
   }
 
@@ -67,13 +69,18 @@ export class Find {
   }
 
   private search(jump: boolean): void {
-    const q = this.input.value.toLowerCase();
+    const query = this.input.value;
     const text = this.editor.ta.value;
-    const hay = text.toLowerCase();
     this.matches = [];
-    if (q) {
-      for (let i = hay.indexOf(q); i !== -1 && this.matches.length < MAX_MATCHES; i = hay.indexOf(q, i + q.length)) {
-        this.matches.push(i);
+    this.lengths = [];
+    if (query) {
+      // Match on the original text (not a lower-cased copy, whose length can
+      // differ for characters like "İ") so indices line up with the editor.
+      const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+      for (const m of text.matchAll(re)) {
+        this.matches.push(m.index!);
+        this.lengths.push(m[0].length);
+        if (this.matches.length >= MAX_MATCHES) break;
       }
     }
     if (jump || this.index >= this.matches.length) {
@@ -82,29 +89,30 @@ export class Find {
       const next = this.matches.findIndex((m) => m >= caret);
       this.index = this.matches.length ? (next === -1 ? 0 : next) : -1;
     }
-    this.paint(text, q.length);
+    this.paint(text);
     if (jump) this.reveal();
   }
 
   private step(dir: 1 | -1): void {
     if (!this.matches.length) return;
     this.index = (this.index + dir + this.matches.length) % this.matches.length;
-    this.paint(this.editor.ta.value, this.input.value.length);
+    this.paint(this.editor.ta.value);
     this.reveal();
   }
 
-  private paint(text: string, len: number): void {
+  private paint(text: string): void {
     this.count.textContent = this.input.value ? `${this.matches.length ? this.index + 1 : 0}/${this.matches.length}` : "";
     this.root.classList.toggle("none", !!this.input.value && !this.matches.length);
     const parts: Node[] = [];
     let last = 0;
     this.matches.forEach((m, i) => {
+      const end = m + this.lengths[i];
       parts.push(document.createTextNode(text.slice(last, m)));
       const mark = document.createElement("mark");
-      mark.textContent = text.slice(m, m + len);
+      mark.textContent = text.slice(m, end);
       if (i === this.index) mark.className = "current";
       parts.push(mark);
-      last = m + len;
+      last = end;
     });
     parts.push(document.createTextNode(text.slice(last) + "​"));
     this.layer.replaceChildren(...parts);

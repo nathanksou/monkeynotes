@@ -1,7 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main window.",
+  "description": "Permissions for the main window. File access goes through the app's own commands, which are limited to the notes folder and to files picked in native dialogs.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-destroy", "dialog:default", "opener:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-destroy",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/nathanksou/monkeynotes/*" }]
+    }
+  ]
 }

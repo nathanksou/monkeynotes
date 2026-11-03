@@ -5,7 +5,7 @@ import { MemoryBackend } from "./memory-backend";
 
 async function open(seed: Record<string, string> = {}, modified?: number, titleFromFile = false) {
   const be = new MemoryBackend(seed, modified);
-  const v = new Vault(be, "/notes");
+  const v = new Vault(be);
   v.titleFromFile = titleFromFile;
   await v.load();
   return { be, v };
@@ -89,12 +89,8 @@ describe("trash", () => {
 
   it("purges its own trash after 30 days", async () => {
     const be = new MemoryBackend({ ".trash/old.md": "old" });
-    be.files.set(".monkeynotes.json", {
-      body: JSON.stringify({ trash: { "old.md": { from: "", deletedAt: Date.now() - TRASH_TTL_MS - 1000 } } }),
-      created: 0,
-      modified: 0,
-    });
-    const v = new Vault(be, "/notes");
+    be.put(".monkeynotes.json", JSON.stringify({ trash: { "old.md": { from: "", deletedAt: Date.now() - TRASH_TTL_MS - 1000 } } }));
+    const v = new Vault(be);
     await v.load();
     await v.flush();
     expect(be.paths()).toEqual([]);
@@ -173,7 +169,7 @@ describe("pins", () => {
     await v.flush();
     const meta = JSON.parse(be.files.get(".monkeynotes.json")!.body);
     expect(meta.pinned).toEqual(["b.md"]);
-    const again = new Vault(be, "/notes");
+    const again = new Vault(be);
     await again.load();
     expect(again.notes[0].pinned).toBe(true);
   });
@@ -183,10 +179,95 @@ describe("reload", () => {
   it("picks up external edits but never clobbers unsaved typing", async () => {
     const { be, v } = await open({ "a.md": "a", "b.md": "b" });
     const [a, b] = [v.notes.find((n) => n.path === "a.md")!, v.notes.find((n) => n.path === "b.md")!];
-    be.files.set("a.md", { body: "a\nedited elsewhere", created: 0, modified: 1 });
+    be.put("a.md", "a\nedited elsewhere");
     const changed = await v.reload(a.id);
     expect(changed).toBe(true);
     expect(a.body).toBe("a\nedited elsewhere");
     expect(b.body).toBe("b");
+  });
+});
+
+describe("never losing data", () => {
+  it("a new note never overwrites a file it doesn't know about", async () => {
+    const { be, v } = await open();
+    be.put("todo.md", "someone else's todo list"); // e.g. a sync client, no reload yet
+    const n = v.create("");
+    v.setBody(n, "todo\nmine");
+    await v.flush();
+    expect(be.files.get("todo.md")?.body).toBe("someone else's todo list");
+    expect(be.files.get("todo 2.md")?.body).toBe("todo\nmine");
+    expect(n.path).toBe("todo 2.md");
+  });
+
+  it("an import never overwrites an unknown file", async () => {
+    const { be, v } = await open();
+    be.put("notes.md", "existing");
+    v.importFiles("", [{ name: "notes", body: "imported" }]);
+    await v.flush();
+    expect(be.files.get("notes.md")?.body).toBe("existing");
+    expect(be.files.get("notes 2.md")?.body).toBe("imported");
+  });
+
+  it("a rename onto an unknown file picks another name and leaves no duplicate", async () => {
+    const { be, v } = await open({ "ideas.md": "ideas" });
+    be.put("plans.md", "not ours");
+    v.setBody(v.notes[0], "plans\nfrom ideas");
+    await v.flush();
+    expect(be.paths()).toEqual(["plans 2.md", "plans.md"]);
+    expect(be.files.get("plans.md")?.body).toBe("not ours");
+    expect(be.files.get("plans 2.md")?.body).toBe("plans\nfrom ideas");
+  });
+
+  it("keeps unsaved text when a save fails, and a reload doesn't replace it", async () => {
+    const errors: string[] = [];
+    const { be, v } = await open({ "a.md": "a" });
+    v.onError = (m) => errors.push(m);
+    const n = v.notes[0];
+    be.failWrites.add("a.md");
+    v.setBody(n, "a\nimportant edit");
+    await v.flush();
+    expect(errors).toHaveLength(1);
+    expect(v.failures).toBe(1);
+    await v.reload(n.id); // flushes again: this time the write succeeds
+    expect(n.body).toBe("a\nimportant edit");
+    expect(be.files.get("a.md")?.body).toBe("a\nimportant edit");
+  });
+
+  it("a save queued before a folder rename lands in the renamed folder", async () => {
+    const { be, v } = await open({ "projects/plan.md": "plan" });
+    const n = v.notes[0];
+    v.setBody(n, "plan\nedited");
+    const saving = v.flush(); // save queued...
+    v.renameFolder("projects", "work"); // ...then the folder rename
+    await saving;
+    await v.flush();
+    expect(be.paths()).toEqual(["work/plan.md"]);
+    expect(be.files.get("work/plan.md")?.body).toBe("plan\nedited");
+    expect([...be.dirs]).toEqual(["work"]);
+  });
+
+  it("a failed folder rename puts the old names back", async () => {
+    const { be, v } = await open({ "projects/plan.md": "plan" });
+    be.dirs.add("work"); // exists on disk but wasn't scanned yet
+    v.onError = () => {};
+    v.renameFolder("projects", "work");
+    await v.flush();
+    expect(v.folders.map((f) => f.id)).toContain("projects");
+    expect(v.notes[0].folderId).toBe("projects");
+    expect(be.paths()).toEqual(["projects/plan.md"]);
+  });
+
+  it("reload only re-reads files that changed", async () => {
+    const { be, v } = await open({ "a.md": "a", "b.md": "b" });
+    let bodiesSent = 0;
+    const scan = be.scan.bind(be);
+    be.scan = async (known) => {
+      const r = await scan(known);
+      bodiesSent += r.files.filter((f) => f.body !== null).length;
+      return r;
+    };
+    be.put("b.md", "b\nchanged");
+    await v.reload(null);
+    expect(bodiesSent).toBe(1);
   });
 });

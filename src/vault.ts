@@ -2,11 +2,21 @@
  * The notes folder, held in memory and kept in sync with the disk.
  *
  * Changes are applied to memory right away (so the UI never waits) and the
- * matching file operations run one at a time on a queue. Notes made in the app
- * are named after their title and renamed as the title changes; files that came
- * from elsewhere keep whatever name they had.
+ * matching file operations run one at a time on a queue. Each queued operation
+ * decides file names when it runs, from the state of the disk at that moment,
+ * and `Note.path` only changes once the disk has actually changed.
+ *
+ * Safety rules:
+ * - a new or renamed note never replaces an existing file (the backend refuses
+ *   with EEXIST and we pick another name);
+ * - a save that fails stays pending, so a later reload can't replace the
+ *   unsaved text with the stale copy on disk.
+ *
+ * Notes made in the app are named after their title and renamed as the title
+ * changes; files that came from elsewhere keep whatever name they had.
  */
 import type { Backend, ExtDir, ExtFile, FileEntry, Scan } from "./backend";
+import { isExists } from "./errors";
 import { type Folder, META_FILE, type Note, ROOT, TRASH_DIR, TRASH_TTL_MS, titleLine, uid } from "./model";
 
 interface Meta {
@@ -17,6 +27,8 @@ interface Meta {
 
 const FORBIDDEN = /[\\/:*?"<>|\u0000-\u001f]/g;
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
+/** How many other names to try when one is taken on disk. */
+const MAX_NAME_TRIES = 50;
 
 /** Turn a title into something every OS accepts as a file or folder name. */
 export function safeName(title: string, fallback = "untitled"): string {
@@ -30,8 +42,11 @@ export function safeName(title: string, fallback = "untitled"): string {
 const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ROOT);
 const baseOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 const stemOf = (path: string) => baseOf(path).replace(/\.[^.]+$/, "");
-const extOf = (path: string) => (/\.[^./]+$/.exec(path)?.[0] ?? ".md");
+const extOf = (path: string) => /\.[^./]+$/.exec(path)?.[0] ?? ".md";
 const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
+/** `x` with the folder prefix `from` replaced by `to`. */
+const swapPrefix = (x: string, from: string, to: string) =>
+  x === from ? to : x.startsWith(from + "/") ? to + x.slice(from.length) : x;
 
 /** Root first, then depth-first alphabetical, so children follow their parent. */
 export function sortFolders(folders: Folder[]): Folder[] {
@@ -42,28 +57,38 @@ export function sortFolders(folders: Folder[]): Folder[] {
 export class Vault {
   folders: Folder[] = [];
   notes: Note[] = [];
-  private queue: Promise<unknown> = Promise.resolve();
-  private dirty = new Set<Note>();
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private lastMeta = "";
   /** Title notes by file name instead of first line (see setTitleFromFile). */
   titleFromFile = false;
   /** Called with a message when a file operation fails. */
   onError: (msg: string) => void = (m) => console.error(m);
+  /** Number of failed file operations so far (lets callers check a batch succeeded). */
+  failures = 0;
 
-  constructor(
-    private be: Backend,
-    readonly root: string,
-  ) {}
+  private queue: Promise<unknown> = Promise.resolve();
+  private dirty = new Set<Note>();
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private lastMeta = "";
+  private metaDirty = false;
+  /** Lower-cased paths we found to exist on disk without being one of our notes. */
+  private occupied = new Set<string>();
+  /** File modified times from the last scan, so unchanged files aren't re-read. */
+  private mtimes = new Map<string, number>();
+  /** Folder renames queued but not yet done on disk, as [old id, new id]. */
+  private pendingRenames: [string, string][] = [];
+  /** Requested file names for imported notes that haven't been written yet. */
+  private nameHints = new WeakMap<Note, string>();
+
+  constructor(private be: Backend) {}
 
   // ---------------------------------------------------------------- loading
 
   async load(): Promise<void> {
-    const scan = await this.be.scan(this.root);
+    const scan = await this.be.scan();
     this.folders = this.foldersFrom(scan);
     const meta = this.parseMeta(scan.meta);
     const pinned = new Set(meta.pinned ?? []);
-    this.notes = scan.files.map((f) => this.fromFile(f, meta, pinned));
+    this.notes = scan.files.map((f) => this.fromFile(f, f.body ?? "", meta, pinned));
+    this.rememberTimes(scan);
     // Recently deleted notes are purged after 30 days, but only ones this app put
     // there: another app's .trash (Obsidian uses one too) is never purged.
     const cutoff = Date.now() - TRASH_TTL_MS;
@@ -75,50 +100,57 @@ export class Vault {
 
   /**
    * Pick up changes made outside the app (another editor, a sync client).
-   * Returns true if the given note's text changed on disk.
+   * Only files whose modified time changed are re-read. Notes with unsaved
+   * changes always win over the disk. Returns true if `openId`'s text changed.
    */
   async reload(openId: string | null): Promise<boolean> {
     await this.flush();
-    const scan = await this.be.scan(this.root);
+    const scan = await this.be.scan(Object.fromEntries(this.mtimes));
     this.folders = this.foldersFrom(scan);
+    this.occupied.clear();
     const byPath = new Map(this.notes.filter((n) => n.path).map((n) => [n.path, n]));
-    let openChanged = false;
-    const seen = new Set<Note>();
     const meta = this.parseMeta(scan.meta);
+    const seen = new Set<Note>();
+    let openChanged = false;
     for (const f of scan.files) {
       const existing = byPath.get(f.path);
       if (existing) {
         seen.add(existing);
-        if (existing.body !== f.body && !this.dirty.has(existing)) {
+        if (f.body !== null && existing.body !== f.body && !this.dirty.has(existing)) {
           existing.body = f.body;
           existing.updatedAt = f.modified;
           if (existing.id === openId) openChanged = true;
         }
-      } else {
-        const n = this.fromFile(f, meta, new Set());
+      } else if (f.body !== null) {
+        const n = this.fromFile(f, f.body, meta, new Set());
         this.notes.push(n);
         seen.add(n);
       }
     }
-    // Files that disappeared; unsaved new notes stay.
+    // Files that disappeared; notes not yet on disk (or failing to save) stay.
     this.notes = this.notes.filter((n) => !n.path || seen.has(n) || this.dirty.has(n));
+    this.rememberTimes(scan);
     return openChanged;
   }
 
-  private fromFile(f: FileEntry, meta: Meta, pinned: Set<string>): Note {
+  private rememberTimes(scan: Scan): void {
+    this.mtimes = new Map(scan.files.map((f) => [f.path, f.modified]));
+  }
+
+  private fromFile(f: FileEntry, body: string, meta: Meta, pinned: Set<string>): Note {
     const inTrash = dirOf(f.path) === TRASH_DIR;
     const t = inTrash ? meta.trash?.[baseOf(f.path)] : undefined;
     return {
       id: uid(),
       path: f.path,
       folderId: inTrash ? (t?.from ?? ROOT) : dirOf(f.path),
-      body: f.body,
+      body,
       createdAt: f.created,
       updatedAt: f.modified,
       pinned: pinned.has(f.path) || undefined,
       deletedAt: inTrash ? (t?.deletedAt ?? f.modified) : undefined,
       foreignTrash: inTrash && !t ? true : undefined,
-      autoName: this.followsTitle(f.path, f.body),
+      autoName: this.followsTitle(f.path, body),
     };
   }
 
@@ -136,20 +168,6 @@ export class Vault {
     for (const n of this.notes) if (n.path) n.autoName = this.followsTitle(n.path, n.body);
   }
 
-  /** Give a note's file a name of the user's choosing; it stops following the title. */
-  renameNote(n: Note, name: string): void {
-    const dir = n.deletedAt ? TRASH_DIR : n.folderId;
-    const target = this.uniquePath(dir, safeName(name), n.path ? extOf(n.path) : ".md", n);
-    const from = n.path;
-    const body = n.body;
-    n.autoName = false;
-    n.path = target;
-    this.dirty.delete(n);
-    if (from && from !== target) this.run("rename", () => this.be.rename(this.root, from, target));
-    this.run("save", () => this.be.write(this.root, target, body));
-    this.schedule(); // pins / trash metadata are keyed by path
-  }
-
   private foldersFrom(scan: Scan): Folder[] {
     return sortFolders([{ id: ROOT, name: "notes" }, ...scan.dirs.map((d) => ({ id: d, name: baseOf(d) }))]);
   }
@@ -164,18 +182,30 @@ export class Vault {
 
   // ---------------------------------------------------------------- queue
 
-  private run(label: string, op: () => Promise<unknown>): Promise<void> {
-    const p = this.queue.then(op).catch((e) => this.onError(`${label}: ${e}`));
+  /** Run `op` after everything already queued. Failures are reported, never thrown. */
+  private run(label: string, op: () => Promise<unknown>, onFail?: () => void): Promise<void> {
+    const p = this.queue.then(op).then(
+      () => undefined,
+      (e) => {
+        this.failures++;
+        onFail?.();
+        this.onError(`${label} failed: ${e}`);
+      },
+    );
     this.queue = p;
-    return p as Promise<void>;
+    return p;
   }
 
   /** Write everything pending and wait for the disk to catch up. */
   async flush(): Promise<void> {
     clearTimeout(this.timer);
-    for (const n of [...this.dirty]) this.saveNote(n);
+    const pending = [...this.dirty];
     this.dirty.clear();
-    this.saveMeta();
+    for (const n of pending) this.saveNote(n);
+    if (this.metaDirty) {
+      this.metaDirty = false;
+      this.run("save metadata", () => this.writeMeta());
+    }
     await this.queue;
   }
 
@@ -186,34 +216,78 @@ export class Vault {
 
   // ---------------------------------------------------------------- naming
 
-  /** A free path in `dir` for `stem`, ignoring `self`'s current path. */
+  private isTaken(path: string, self?: Note): boolean {
+    const p = path.toLowerCase();
+    return this.occupied.has(p) || this.notes.some((n) => n !== self && n.path.toLowerCase() === p);
+  }
+
+  /** A free path in `dir` for `stem`, ignoring `self`'s own current path. */
   private uniquePath(dir: string, stem: string, ext: string, self?: Note): string {
-    const taken = new Set(this.notes.filter((n) => n !== self && n.path).map((n) => n.path.toLowerCase()));
     for (let i = 1; ; i++) {
       const p = join(dir, `${stem}${i > 1 ? ` ${i}` : ""}${ext}`);
-      if (!taken.has(p.toLowerCase())) return p;
+      if (!this.isTaken(p, self)) return p;
     }
   }
 
+  /** Where `n` should live on disk right now. */
   private wantedPath(n: Note): string {
-    const dir = n.deletedAt ? TRASH_DIR : n.folderId;
+    const dir = n.deletedAt ? TRASH_DIR : this.diskFolder(n.folderId);
     const ext = n.path ? extOf(n.path) : ".md";
-    if (n.path && !n.autoName && dirOf(n.path) === dir) return n.path;
-    const stem = n.autoName || !n.path ? safeName(titleLine(n.body)) : stemOf(n.path);
-    const current = n.path && dirOf(n.path) === dir && stemOf(n.path).replace(/ \d+$/, "") === stem;
-    return current ? n.path : this.uniquePath(dir, stem, ext, n);
+    const hint = this.nameHints.get(n);
+    if (hint === undefined && n.path && !n.autoName && dirOf(n.path) === dir) return n.path;
+    const stem =
+      hint !== undefined ? safeName(hint) : n.autoName || !n.path ? safeName(titleLine(n.body)) : stemOf(n.path);
+    // Keep "ideas 2.md" for a note titled "ideas" rather than renaming it back and forth.
+    const settled = n.path && dirOf(n.path) === dir && stemOf(n.path).replace(/ \d+$/, "") === stem;
+    return settled ? n.path : this.uniquePath(dir, stem, ext, n);
   }
 
-  /** Queue whatever file operations bring `n` up to date on disk. */
+  /** A folder id as it is on disk right now (folder renames still queued are undone). */
+  private diskFolder(id: string): string {
+    for (let i = this.pendingRenames.length - 1; i >= 0; i--) {
+      const [from, to] = this.pendingRenames[i];
+      id = swapPrefix(id, to, from);
+    }
+    return id;
+  }
+
+  /** Queue whatever brings `n` up to date on disk. */
   private saveNote(n: Note): void {
-    if (!this.notes.includes(n)) return;
-    if (!n.path && n.body.trim() === "") return; // a brand-new empty note isn't a file yet
-    const target = this.wantedPath(n);
-    const from = n.path;
-    const body = n.body;
-    n.path = target;
-    if (from && from !== target) this.run("rename", () => this.be.rename(this.root, from, target));
-    this.run("save", () => this.be.write(this.root, target, body));
+    this.run("save", () => this.persist(n), () => this.dirty.add(n));
+  }
+
+  private async persist(n: Note): Promise<void> {
+    if (!this.notes.includes(n)) return; // deleted meanwhile
+    if (!n.path && n.body.trim() === "" && !this.nameHints.has(n)) return; // a new empty note isn't a file yet
+    for (let attempt = 0; ; attempt++) {
+      const from = n.path;
+      const target = this.wantedPath(n);
+      try {
+        if (!from) {
+          await this.be.write(target, n.body, true);
+        } else {
+          if (from !== target) {
+            await this.be.rename(from, target);
+            this.movedTo(n, target);
+          }
+          await this.be.write(target, n.body, false);
+        }
+        this.movedTo(n, target);
+        this.nameHints.delete(n);
+        this.mtimes.delete(target); // our own write: re-read it on the next reload
+        return;
+      } catch (e) {
+        // Someone else's file has that name: remember it and try the next name.
+        if (!isExists(e) || attempt >= MAX_NAME_TRIES) throw e;
+        this.occupied.add(target.toLowerCase());
+      }
+    }
+  }
+
+  private movedTo(n: Note, path: string): void {
+    if (n.path === path) return;
+    if (n.pinned || n.deletedAt) this.metaDirty = true;
+    n.path = path;
   }
 
   private buildMeta(): Meta {
@@ -224,11 +298,12 @@ export class Vault {
     return { pinned: this.notes.filter((n) => n.pinned && n.path).map((n) => n.path), trash };
   }
 
-  private saveMeta(): void {
+  /** Runs on the queue, so it sees the paths as they are on disk. */
+  private async writeMeta(): Promise<void> {
     const json = JSON.stringify(this.buildMeta());
     if (json === this.lastMeta) return;
+    await this.be.write(META_FILE, JSON.stringify(JSON.parse(json), null, 2), false);
     this.lastMeta = json;
-    this.run("save metadata", () => this.be.write(this.root, META_FILE, JSON.stringify(JSON.parse(json), null, 2)));
   }
 
   // ---------------------------------------------------------------- notes
@@ -241,19 +316,18 @@ export class Vault {
     return path ? this.notes.find((n) => n.path === path) : undefined;
   }
 
+  /** A new note. With `nameHint` (imports, links) it's written right away under that name. */
   create(folderId: string, body = "", nameHint?: string): Note {
     const now = Date.now();
     const n: Note = { id: uid(), path: "", folderId, body, createdAt: now, updatedAt: now, autoName: true };
-    if (nameHint !== undefined) {
-      n.autoName = safeName(nameHint) === safeName(titleLine(body));
-      n.path = this.uniquePath(folderId, safeName(nameHint), ".md");
-      this.notes.push(n);
-      const { path } = n;
-      this.run("import", () => this.be.write(this.root, path, body));
-      return n;
-    }
     this.notes.push(n);
-    if (body) this.touch(n);
+    if (nameHint !== undefined) {
+      n.autoName = !this.titleFromFile && safeName(nameHint) === safeName(titleLine(body));
+      this.nameHints.set(n, nameHint);
+      this.saveNote(n);
+    } else if (body) {
+      this.touch(n);
+    }
     return n;
   }
 
@@ -271,7 +345,7 @@ export class Vault {
 
   /** Forget an empty note that was never saved. */
   discardIfBlank(n: Note | undefined): boolean {
-    if (!n || n.path || n.body.trim() !== "") return false;
+    if (!n || n.path || n.body.trim() !== "" || this.nameHints.has(n)) return false;
     this.notes = this.notes.filter((x) => x !== n);
     this.dirty.delete(n);
     return true;
@@ -285,13 +359,22 @@ export class Vault {
 
   togglePin(n: Note): void {
     n.pinned = !n.pinned || undefined;
+    this.metaDirty = true;
     this.schedule();
+  }
+
+  /** Give a note's file a name of the user's choosing; it stops following the title. */
+  renameNote(n: Note, name: string): void {
+    n.autoName = false;
+    this.nameHints.set(n, name);
+    this.touch(n);
   }
 
   trash(n: Note): void {
     if (this.discardIfBlank(n)) return;
     n.deletedAt = Date.now();
     n.pinned = undefined;
+    this.metaDirty = true;
     this.touch(n);
   }
 
@@ -300,16 +383,18 @@ export class Vault {
     n.deletedAt = undefined;
     n.foreignTrash = undefined;
     if (!this.folders.some((f) => f.id === n.folderId)) n.folderId = ROOT;
+    this.metaDirty = true;
     this.touch(n);
   }
 
   destroy(n: Note): void {
     this.notes = this.notes.filter((x) => x !== n);
     this.dirty.delete(n);
-    if (n.path) {
-      const { path } = n;
-      this.run("delete", () => this.be.remove(this.root, path));
-    }
+    this.metaDirty = true;
+    // Read the path when the op runs: a queued save may still move the file first.
+    this.run("delete", async () => {
+      if (n.path) await this.be.remove(n.path);
+    });
     this.schedule();
   }
 
@@ -336,7 +421,7 @@ export class Vault {
     const id = this.uniqueFolder(parent, safeName(name, "folder"));
     const f = { id, name: baseOf(id) };
     this.folders = sortFolders([...this.folders, f]);
-    this.run("create folder", () => this.be.mkdir(this.root, id));
+    this.run("create folder", () => this.be.mkdir(id));
     return f;
   }
 
@@ -345,14 +430,28 @@ export class Vault {
     if (id === ROOT || !this.folders.some((f) => f.id === id)) return id;
     const next = this.uniqueFolder(dirOf(id), safeName(name, "folder"), id);
     if (next === id) return id;
-    const swap = (x: string) => (x === id ? next : x.startsWith(id + "/") ? next + x.slice(id.length) : x);
-    this.folders = sortFolders(this.folders.map((f) => ({ id: swap(f.id), name: baseOf(swap(f.id)) })));
-    for (const n of this.notes) {
-      n.folderId = swap(n.folderId);
-      if (!n.deletedAt && n.path) n.path = swap(n.path);
-    }
-    this.run("rename folder", () => this.be.rename(this.root, id, next));
-    this.schedule(); // pins and trash metadata point at the old paths
+    const relabel = (from: string, to: string) => {
+      this.folders = sortFolders(this.folders.map((f) => ({ id: swapPrefix(f.id, from, to), name: baseOf(swapPrefix(f.id, from, to)) })));
+      for (const n of this.notes) n.folderId = swapPrefix(n.folderId, from, to);
+    };
+    relabel(id, next);
+    const pending: [string, string] = [id, next];
+    this.pendingRenames.push(pending);
+    const done = () => (this.pendingRenames = this.pendingRenames.filter((r) => r !== pending));
+    this.run(
+      "rename folder",
+      async () => {
+        await this.be.rename(id, next);
+        done();
+        for (const n of this.notes) if (n.path && !n.deletedAt) n.path = swapPrefix(n.path, id, next);
+        this.metaDirty = true;
+      },
+      () => {
+        done();
+        relabel(next, id); // the disk didn't change: put the old names back
+      },
+    );
+    this.schedule();
     return next;
   }
 
@@ -370,7 +469,7 @@ export class Vault {
     void this.flush().then(() => {
       for (const dir of order) {
         this.run("remove folder", () =>
-          this.be.rmdir(this.root, dir).catch(() => {
+          this.be.rmdir(dir).catch(() => {
             /* folder still holds non-note files; leave it */
           }),
         );

@@ -1,35 +1,50 @@
 //! File-system commands for monkeynotes.
 //!
-//! Notes are plain markdown files inside a "notes folder" the user picks:
+//! Notes are plain markdown files inside a "notes folder":
 //!
 //! ```text
 //! <root>/                    the default "notes" folder
-//! <root>/<folder>/.../*.md  folders, nested up to 8 deep
+//! <root>/<folder>/.../*.md   folders, nested up to MAX_DEPTH
 //! <root>/.trash/*.md         recently deleted
 //! <root>/.monkeynotes.json   pins + trash metadata
 //! ```
 //!
-//! App settings live separately in the app data dir as `state.json`.
-//! Paths passed from the UI are relative to the root and are validated so they
-//! can never escape it.
+//! Security model: the web UI never names an absolute path. The notes folder is
+//! owned by this side (chosen through a native dialog and remembered here), note
+//! paths from the UI are relative and validated so they can't escape it, and
+//! files outside it are only read or written through native open/save dialogs.
+//!
+//! All commands are `async`, so they run off the main thread and file work never
+//! freezes the window.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 
 type Res<T> = Result<T, String>;
 
 const NOTE_EXTS: [&str; 3] = ["md", "markdown", "txt"];
 const TRASH_DIR: &str = ".trash";
 const META_FILE: &str = ".monkeynotes.json";
+/// How deep folders are scanned and imported.
+const MAX_DEPTH: u8 = 8;
+/// Bigger files are left alone: they're almost certainly not notes.
+const MAX_NOTE_BYTES: u64 = 8 * 1024 * 1024;
+/// Error prefix the UI looks for to pick another name instead of overwriting.
+const EEXIST: &str = "EEXIST";
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
+
+// ------------------------------------------------------------------ helpers
 
 fn app_dir(app: &AppHandle) -> Res<PathBuf> {
     let dir = app.path().app_data_dir().map_err(err)?;
@@ -38,13 +53,13 @@ fn app_dir(app: &AppHandle) -> Res<PathBuf> {
 }
 
 /// Join a relative path onto `root`, refusing anything that could escape it.
-fn resolve(root: &str, rel: &str) -> Res<PathBuf> {
+fn resolve(root: &Path, rel: &str) -> Res<PathBuf> {
     let rel_path = Path::new(rel);
     let safe = !rel.is_empty() && rel_path.components().all(|c| matches!(c, Component::Normal(_)));
     if !safe {
         return Err(format!("invalid path: {rel}"));
     }
-    Ok(Path::new(root).join(rel_path))
+    Ok(root.join(rel_path))
 }
 
 fn read_opt(path: &Path) -> Res<Option<String>> {
@@ -64,7 +79,10 @@ fn write_atomic(path: &Path, contents: &str) -> Res<()> {
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     fs::write(&tmp, contents).map_err(err)?;
-    fs::rename(&tmp, path).map_err(err)
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        err(e)
+    })
 }
 
 fn is_note(path: &Path) -> bool {
@@ -82,28 +100,116 @@ fn millis(t: std::io::Result<SystemTime>) -> Option<u64> {
     t.ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_millis() as u64)
 }
 
-// ------------------------------------------------------------------ app state
+fn dialog_path(picked: FilePath) -> Res<PathBuf> {
+    picked.into_path().map_err(err)
+}
 
-#[tauri::command]
-fn load_state(app: AppHandle) -> Res<Option<String>> {
-    read_opt(&app_dir(&app)?.join("state.json"))
+/// Read a note file the user picked, refusing huge or non-text files.
+fn read_note_file(path: &Path) -> Res<String> {
+    let len = fs::metadata(path).map_err(err)?.len();
+    if len > MAX_NOTE_BYTES {
+        return Err(format!("{} is too large to be a note", path.display()));
+    }
+    fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+// ------------------------------------------------------------------ notes folder location
+
+/// The current notes folder, and whether the user chose it (vs. the default).
+struct NotesDir(Mutex<(PathBuf, bool)>);
+
+impl NotesDir {
+    fn root(&self) -> PathBuf {
+        self.0.lock().unwrap().0.clone()
+    }
+}
+
+fn default_root(app: &AppHandle) -> PathBuf {
+    let base = app
+        .path()
+        .document_dir()
+        .or_else(|_| app.path().home_dir())
+        .unwrap_or_else(|_| PathBuf::from("."));
+    base.join("monkeynotes")
+}
+
+fn root_setting_file(app: &AppHandle) -> Res<PathBuf> {
+    Ok(app_dir(app)?.join("notes-dir.txt"))
+}
+
+fn load_notes_dir(app: &AppHandle) -> NotesDir {
+    let saved = root_setting_file(app)
+        .ok()
+        .and_then(|f| fs::read_to_string(f).ok())
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| p.is_absolute());
+    NotesDir(Mutex::new(match saved {
+        Some(p) => (p, true),
+        None => (default_root(app), false),
+    }))
 }
 
 #[tauri::command]
-fn save_state(app: AppHandle, contents: String) -> Res<()> {
+async fn notes_dir(dir: State<'_, NotesDir>) -> Res<String> {
+    Ok(dir.root().display().to_string())
+}
+
+/// Let the user pick a new notes folder. Returns the new path, or None if cancelled.
+#[tauri::command]
+async fn choose_notes_dir(app: AppHandle, dir: State<'_, NotesDir>) -> Res<Option<String>> {
+    let Some(picked) = app.dialog().file().set_title("choose a notes folder").blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let path = dialog_path(picked)?;
+    write_atomic(&root_setting_file(&app)?, &path.display().to_string())?;
+    *dir.0.lock().unwrap() = (path.clone(), true);
+    Ok(Some(path.display().to_string()))
+}
+
+/// Switch to the default notes folder. With `persist: false` it only lasts until
+/// the app restarts (used when the chosen folder is temporarily missing).
+#[tauri::command]
+async fn reset_notes_dir(app: AppHandle, dir: State<'_, NotesDir>, persist: bool) -> Res<String> {
+    let path = default_root(&app);
+    if persist {
+        match fs::remove_file(root_setting_file(&app)?) {
+            Err(e) if e.kind() != ErrorKind::NotFound => return Err(err(e)),
+            _ => {}
+        }
+    }
+    *dir.0.lock().unwrap() = (path.clone(), false);
+    Ok(path.display().to_string())
+}
+
+// ------------------------------------------------------------------ app state
+
+/// Settings and stats. A corrupt file is set aside instead of breaking startup.
+#[tauri::command]
+async fn load_state(app: AppHandle) -> Res<Option<String>> {
+    let path = app_dir(&app)?.join("state.json");
+    let Some(raw) = read_opt(&path)? else { return Ok(None) };
+    if serde_json::from_str::<serde_json::Value>(&raw).is_ok() {
+        return Ok(Some(raw));
+    }
+    let _ = fs::rename(&path, path.with_extension("json.corrupt"));
+    Ok(None)
+}
+
+#[tauri::command]
+async fn save_state(app: AppHandle, contents: String) -> Res<()> {
     serde_json::from_str::<serde_json::Value>(&contents).map_err(err)?;
     write_atomic(&app_dir(&app)?.join("state.json"), &contents)
 }
 
 /// The single-file database used by v0.1, if it is still around.
 #[tauri::command]
-fn load_legacy(app: AppHandle) -> Res<Option<String>> {
+async fn load_legacy(app: AppHandle) -> Res<Option<String>> {
     read_opt(&app_dir(&app)?.join("notes.json"))
 }
 
 /// Keep the v0.1 database as a backup once it has been migrated.
 #[tauri::command]
-fn retire_legacy(app: AppHandle) -> Res<()> {
+async fn retire_legacy(app: AppHandle) -> Res<()> {
     let dir = app_dir(&app)?;
     let old = dir.join("notes.json");
     if old.exists() {
@@ -112,22 +218,13 @@ fn retire_legacy(app: AppHandle) -> Res<()> {
     Ok(())
 }
 
-#[tauri::command]
-fn default_root(app: AppHandle) -> Res<String> {
-    let base = app
-        .path()
-        .document_dir()
-        .or_else(|_| app.path().home_dir())
-        .map_err(err)?;
-    Ok(base.join("monkeynotes").display().to_string())
-}
-
-// ------------------------------------------------------------------ notes folder
+// ------------------------------------------------------------------ scanning
 
 #[derive(Serialize)]
 struct FileEntry {
     path: String,
-    body: String,
+    /// None when the caller already has this version (same modified time).
+    body: Option<String>,
     created: u64,
     modified: u64,
 }
@@ -139,7 +236,7 @@ struct Scan {
     meta: Option<String>,
 }
 
-fn read_notes(root: &Path, rel_dir: &str, out: &mut Vec<FileEntry>) -> Res<()> {
+fn read_notes(root: &Path, rel_dir: &str, known: &HashMap<String, u64>, out: &mut Vec<FileEntry>) -> Res<()> {
     let dir = if rel_dir.is_empty() { root.to_path_buf() } else { root.join(rel_dir) };
     let entries = match fs::read_dir(&dir) {
         Ok(rd) => rd,
@@ -152,92 +249,141 @@ fn read_notes(root: &Path, rel_dir: &str, out: &mut Vec<FileEntry>) -> Res<()> {
         if is_hidden(&name) || !path.is_file() || !is_note(&path) {
             continue;
         }
-        // Skip files that aren't valid UTF-8 rather than failing the whole scan.
-        let Ok(body) = fs::read_to_string(&path) else { continue };
-        let meta = entry.metadata().map_err(err)?;
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.len() > MAX_NOTE_BYTES {
+            continue;
+        }
         let modified = millis(meta.modified()).unwrap_or(0);
         let created = millis(meta.created()).unwrap_or(modified);
         let rel = if rel_dir.is_empty() { name } else { format!("{rel_dir}/{name}") };
+        let body = if modified != 0 && known.get(&rel) == Some(&modified) {
+            None
+        } else {
+            // Skip files that aren't valid UTF-8 rather than failing the whole scan.
+            let Ok(text) = fs::read_to_string(&path) else { continue };
+            Some(text)
+        };
         out.push(FileEntry { path: rel, body, created, modified });
     }
     Ok(())
 }
 
-/// How deep folders are scanned and imported.
-const MAX_DEPTH: u8 = 8;
-
-/// Collect `rel_dir`'s subfolders (any depth) and their notes.
-fn scan_dirs(root: &Path, rel_dir: &str, depth: u8, dirs: &mut Vec<String>, files: &mut Vec<FileEntry>) -> Res<()> {
+/// Collect `rel_dir`'s subfolders (any depth, not following symlinks) and their notes.
+fn scan_dirs(
+    root: &Path,
+    rel_dir: &str,
+    depth: u8,
+    known: &HashMap<String, u64>,
+    dirs: &mut Vec<String>,
+    files: &mut Vec<FileEntry>,
+) -> Res<()> {
     let dir = if rel_dir.is_empty() { root.to_path_buf() } else { root.join(rel_dir) };
     for entry in fs::read_dir(&dir).map_err(err)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if is_hidden(&name) || !entry.path().is_dir() {
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false); // symlinks are not dirs here
+        if is_hidden(&name) || !is_dir {
             continue;
         }
         let rel = if rel_dir.is_empty() { name } else { format!("{rel_dir}/{name}") };
-        read_notes(root, &rel, files)?;
+        read_notes(root, &rel, known, files)?;
         if depth > 1 {
-            scan_dirs(root, &rel, depth - 1, dirs, files)?;
+            scan_dirs(root, &rel, depth - 1, known, dirs, files)?;
         }
         dirs.push(rel);
     }
     Ok(())
 }
 
-/// Read every note in the root, its folders (nested) and the trash.
-#[tauri::command]
-fn scan(root: String) -> Res<Scan> {
-    let root_path = PathBuf::from(&root);
-    fs::create_dir_all(&root_path).map_err(err)?;
+fn scan_root(root: &Path, known: &HashMap<String, u64>) -> Res<Scan> {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
-    read_notes(&root_path, "", &mut files)?;
-    scan_dirs(&root_path, "", MAX_DEPTH, &mut dirs, &mut files)?;
-    read_notes(&root_path, TRASH_DIR, &mut files)?;
+    read_notes(root, "", known, &mut files)?;
+    scan_dirs(root, "", MAX_DEPTH, known, &mut dirs, &mut files)?;
+    read_notes(root, TRASH_DIR, known, &mut files)?;
     dirs.sort_by_key(|d| d.to_lowercase());
-    let meta = read_opt(&root_path.join(META_FILE))?;
+    let meta = read_opt(&root.join(META_FILE))?;
     Ok(Scan { dirs, files, meta })
 }
 
+/// Read every note in the notes folder, its folders and the trash. Files whose
+/// modified time matches `known` come back without a body.
 #[tauri::command]
-fn write_file(root: String, path: String, contents: String) -> Res<()> {
-    write_atomic(&resolve(&root, &path)?, &contents)
+async fn scan(dir: State<'_, NotesDir>, known: Option<HashMap<String, u64>>) -> Res<Scan> {
+    let (root, chosen) = dir.0.lock().unwrap().clone();
+    if !root.is_dir() {
+        if chosen {
+            // An unplugged drive or unmounted volume: don't create a phantom folder.
+            return Err(format!("NOT_FOUND: {}", root.display()));
+        }
+        fs::create_dir_all(&root).map_err(err)?;
+    }
+    scan_root(&root, &known.unwrap_or_default())
 }
 
-/// Rename a note or folder. Refuses to overwrite, except for case-only renames.
+// ------------------------------------------------------------------ note files
+
+/// Write a note. With `create_new`, refuses (EEXIST) to replace a file that
+/// already exists, so a note never overwrites a file the app doesn't know about.
 #[tauri::command]
-fn rename_path(root: String, from: String, to: String) -> Res<()> {
-    let (src, dst) = (resolve(&root, &from)?, resolve(&root, &to)?);
+async fn write_file(dir: State<'_, NotesDir>, path: String, contents: String, create_new: bool) -> Res<()> {
+    let target = resolve(&dir.root(), &path)?;
+    if create_new && target.exists() {
+        return Err(format!("{EEXIST}: {path}"));
+    }
+    write_atomic(&target, &contents)
+}
+
+fn rename_no_clobber(src: &Path, dst: &Path, from: &str, to: &str) -> Res<()> {
     if src == dst {
         return Ok(());
-    }
-    let case_only = from.to_lowercase() == to.to_lowercase();
-    if dst.exists() && !case_only {
-        return Err(format!("{to} already exists"));
     }
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(err)?;
     }
-    fs::rename(&src, &dst).map_err(err)
+    if from.to_lowercase() != to.to_lowercase() {
+        if dst.exists() {
+            return Err(format!("{EEXIST}: {to}"));
+        }
+        return fs::rename(src, dst).map_err(err);
+    }
+    // Case-only rename ("notes" -> "Notes"). On a case-insensitive disk dst
+    // "exists" because it's the same file; on a case-sensitive one it may be a
+    // different file. Go through a temp name and check which it is.
+    let mut tmp = src.as_os_str().to_owned();
+    tmp.push(".renaming");
+    let tmp = PathBuf::from(tmp);
+    fs::rename(src, &tmp).map_err(err)?;
+    if dst.exists() {
+        let _ = fs::rename(&tmp, src);
+        return Err(format!("{EEXIST}: {to}"));
+    }
+    fs::rename(&tmp, dst).map_err(err)
+}
+
+/// Rename a note or folder. Never overwrites (EEXIST).
+#[tauri::command]
+async fn rename_path(dir: State<'_, NotesDir>, from: String, to: String) -> Res<()> {
+    let root = dir.root();
+    rename_no_clobber(&resolve(&root, &from)?, &resolve(&root, &to)?, &from, &to)
 }
 
 #[tauri::command]
-fn remove_file(root: String, path: String) -> Res<()> {
-    match fs::remove_file(resolve(&root, &path)?) {
+async fn remove_file(dir: State<'_, NotesDir>, path: String) -> Res<()> {
+    match fs::remove_file(resolve(&dir.root(), &path)?) {
         Err(e) if e.kind() != ErrorKind::NotFound => Err(err(e)),
         _ => Ok(()),
     }
 }
 
 #[tauri::command]
-fn make_dir(root: String, path: String) -> Res<()> {
-    fs::create_dir_all(resolve(&root, &path)?).map_err(err)
+async fn make_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
+    fs::create_dir_all(resolve(&dir.root(), &path)?).map_err(err)
 }
 
 /// Remove a folder. Only succeeds when it is empty, so non-note files are never lost.
 #[tauri::command]
-fn remove_dir(root: String, path: String) -> Res<()> {
-    match fs::remove_dir(resolve(&root, &path)?) {
+async fn remove_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
+    match fs::remove_dir(resolve(&dir.root(), &path)?) {
         Err(e) if e.kind() != ErrorKind::NotFound => Err(err(e)),
         _ => Ok(()),
     }
@@ -262,32 +408,20 @@ fn stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Read files the user picked to import.
-#[tauri::command]
-fn read_external(paths: Vec<String>) -> Res<Vec<ExtFile>> {
-    paths
-        .iter()
-        .map(|p| {
-            let path = Path::new(p);
-            let body = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            Ok(ExtFile { name: stem(path), body })
-        })
-        .collect()
-}
-
 fn read_ext_dir(path: &Path, depth: u8) -> Res<ExtDir> {
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     for entry in fs::read_dir(path).map_err(err)?.flatten() {
         let p = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(kind) = entry.file_type() else { continue };
         if is_hidden(&name) {
             continue;
         }
-        if p.is_dir() && depth > 0 {
+        if kind.is_dir() && depth > 0 {
             dirs.push(read_ext_dir(&p, depth - 1)?);
-        } else if p.is_file() && is_note(&p) {
-            if let Ok(body) = fs::read_to_string(&p) {
+        } else if kind.is_file() && is_note(&p) {
+            if let Ok(body) = read_note_file(&p) {
                 files.push(ExtFile { name: stem(&p), body });
             }
         }
@@ -296,54 +430,73 @@ fn read_ext_dir(path: &Path, depth: u8) -> Res<ExtDir> {
     Ok(ExtDir { name, files, dirs })
 }
 
-/// Read a folder the user picked to import, including its subfolders.
+/// Ask for note files to import and return their contents.
 #[tauri::command]
-fn read_external_dir(path: String) -> Res<ExtDir> {
-    read_ext_dir(Path::new(&path), MAX_DEPTH)
+async fn import_files(app: AppHandle) -> Res<Option<Vec<ExtFile>>> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("import notes")
+        .add_filter("notes", &NOTE_EXTS)
+        .blocking_pick_files()
+    else {
+        return Ok(None);
+    };
+    let mut out = Vec::new();
+    for p in picked {
+        let path = dialog_path(p)?;
+        out.push(ExtFile { name: stem(&path), body: read_note_file(&path)? });
+    }
+    Ok(Some(out))
 }
 
-/// Write a file to a location the user picked in a save / folder dialog.
+/// Ask for a folder to import and return its notes, including subfolders.
 #[tauri::command]
-fn write_external(path: String, contents: String) -> Res<()> {
-    write_atomic(Path::new(&path), &contents)
+async fn import_dir(app: AppHandle) -> Res<Option<ExtDir>> {
+    let Some(picked) = app.dialog().file().set_title("import a folder of notes").blocking_pick_folder() else {
+        return Ok(None);
+    };
+    read_ext_dir(&dialog_path(picked)?, MAX_DEPTH).map(Some)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Save one note wherever the user chooses. Returns false if cancelled.
+#[tauri::command]
+async fn export_note(app: AppHandle, name: String, contents: String) -> Res<bool> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("export note")
+        .set_file_name(format!("{name}.md"))
+        .add_filter("markdown", &["md"])
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    write_atomic(&dialog_path(picked)?, &contents)?;
+    Ok(true)
+}
 
-    #[test]
-    fn resolve_accepts_plain_relative_paths() {
-        assert!(resolve("/notes", "a.md").is_ok());
-        assert!(resolve("/notes", "ideas/sub/a.md").is_ok());
-        assert!(resolve("/notes", ".trash/a.md").is_ok());
+#[derive(Deserialize)]
+struct ExportFile {
+    path: String,
+    body: String,
+}
+
+/// Copy notes into a new `folder_name` inside a folder the user chooses.
+/// Returns where they went, or None if cancelled.
+#[tauri::command]
+async fn export_all(app: AppHandle, folder_name: String, files: Vec<ExportFile>) -> Res<Option<String>> {
+    let Some(picked) = app.dialog().file().set_title("export all notes into...").blocking_pick_folder() else {
+        return Ok(None);
+    };
+    if folder_name.contains(['/', '\\']) {
+        return Err(format!("invalid folder name: {folder_name}"));
     }
-
-    #[test]
-    fn resolve_rejects_escapes() {
-        for bad in ["", "..", "../a.md", "ideas/../../a.md", "/etc/passwd", "./a.md"] {
-            assert!(resolve("/notes", bad).is_err(), "{bad} should be rejected");
-        }
+    let dest = resolve(&dialog_path(picked)?, &folder_name)?;
+    for f in files {
+        write_atomic(&resolve(&dest, &f.path)?, &f.body)?;
     }
-
-    #[test]
-    fn scan_reads_nested_folders_and_skips_hidden() {
-        let root = std::env::temp_dir().join(format!("monkeynotes-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("a/b")).unwrap();
-        fs::create_dir_all(root.join(".obsidian")).unwrap();
-        fs::write(root.join("top.md"), "top").unwrap();
-        fs::write(root.join("a/b/deep.md"), "deep").unwrap();
-        fs::write(root.join(".obsidian/app.md"), "hidden").unwrap();
-        fs::write(root.join("a/image.png"), "not a note").unwrap();
-
-        let scan = scan(root.display().to_string()).unwrap();
-        let mut paths: Vec<_> = scan.files.iter().map(|f| f.path.as_str()).collect();
-        paths.sort();
-        assert_eq!(paths, ["a/b/deep.md", "top.md"]);
-        assert_eq!(scan.dirs, ["a", "a/b"]);
-        fs::remove_dir_all(&root).unwrap();
-    }
+    Ok(Some(dest.display().to_string()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -351,22 +504,112 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let dir = load_notes_dir(app.handle());
+            app.manage(dir);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            notes_dir,
+            choose_notes_dir,
+            reset_notes_dir,
             load_state,
             save_state,
             load_legacy,
             retire_legacy,
-            default_root,
             scan,
             write_file,
             rename_path,
             remove_file,
             make_dir,
             remove_dir,
-            read_external,
-            read_external_dir,
-            write_external,
+            import_files,
+            import_dir,
+            export_note,
+            export_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running monkeynotes");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("monkeynotes-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn resolve_accepts_plain_relative_paths() {
+        let root = Path::new("/notes");
+        assert!(resolve(root, "a.md").is_ok());
+        assert!(resolve(root, "ideas/sub/a.md").is_ok());
+        assert!(resolve(root, ".trash/a.md").is_ok());
+    }
+
+    #[test]
+    fn resolve_rejects_escapes() {
+        let root = Path::new("/notes");
+        for bad in ["", "..", "../a.md", "ideas/../../a.md", "/etc/passwd", "./a.md"] {
+            assert!(resolve(root, bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn scan_reads_nested_folders_skips_hidden_and_reuses_known_bodies() {
+        let root = temp_root("scan");
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join("top.md"), "top").unwrap();
+        fs::write(root.join("a/b/deep.md"), "deep").unwrap();
+        fs::write(root.join(".obsidian/app.md"), "hidden").unwrap();
+        fs::write(root.join("a/image.png"), "not a note").unwrap();
+
+        let first = scan_root(&root, &HashMap::new()).unwrap();
+        let mut paths: Vec<_> = first.files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["a/b/deep.md", "top.md"]);
+        assert_eq!(first.dirs, ["a", "a/b"]);
+        assert!(first.files.iter().all(|f| f.body.is_some()));
+
+        let known: HashMap<_, _> = first.files.iter().map(|f| (f.path.clone(), f.modified)).collect();
+        let second = scan_root(&root, &known).unwrap();
+        assert!(second.files.iter().all(|f| f.body.is_none()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rename_never_overwrites() {
+        let root = temp_root("rename");
+        fs::write(root.join("a.md"), "a").unwrap();
+        fs::write(root.join("b.md"), "b").unwrap();
+        let res = rename_no_clobber(&root.join("a.md"), &root.join("b.md"), "a.md", "b.md");
+        assert!(res.unwrap_err().starts_with(EEXIST));
+        assert_eq!(fs::read_to_string(root.join("b.md")).unwrap(), "b");
+        assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "a");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn case_only_rename_keeps_a_different_file() {
+        let root = temp_root("case");
+        fs::write(root.join("notes.md"), "lower").unwrap();
+        let sensitive = !root.join("NOTES.md").exists();
+        if sensitive {
+            // Case-sensitive disk: Notes.md is a separate file and must survive.
+            fs::write(root.join("Notes.md"), "upper").unwrap();
+            let res = rename_no_clobber(&root.join("notes.md"), &root.join("Notes.md"), "notes.md", "Notes.md");
+            assert!(res.unwrap_err().starts_with(EEXIST));
+            assert_eq!(fs::read_to_string(root.join("Notes.md")).unwrap(), "upper");
+            assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "lower");
+        } else {
+            rename_no_clobber(&root.join("notes.md"), &root.join("Notes.md"), "notes.md", "Notes.md").unwrap();
+            assert_eq!(fs::read_to_string(root.join("Notes.md")).unwrap(), "lower");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
