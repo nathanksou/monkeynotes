@@ -14,9 +14,11 @@ import {
   ROOT,
   type Settings,
   TRASH,
+  type TitleSource,
   WELCOME,
   formatDate,
   normalizeState,
+  setTitleSource,
   notePreview,
   noteTitle,
   sortNotes,
@@ -186,6 +188,7 @@ function renderAll(): void {
 
 function applySettings(): void {
   const s = settings();
+  setTitleSource(s.titleSource);
   applyTheme(findTheme(s.theme));
   const root = document.documentElement.style;
   root.setProperty("--font-size", `${s.fontSize}rem`);
@@ -281,6 +284,21 @@ function stepNote(dir: 1 | -1): void {
   openNote(list[Math.min(list.length - 1, Math.max(0, i + dir))].id);
 }
 
+async function renameNote(n: Note): Promise<void> {
+  const current = n.path ? n.path.slice(n.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "") : noteTitle(n);
+  const name = await palette.ask("rename note file", current, focusEditor);
+  if (!name) return;
+  vault.renameNote(n, name);
+  renderAll();
+  saveState();
+}
+
+function setTitleMode(mode: TitleSource): void {
+  setSetting("titleSource", mode);
+  vault.setTitleFromFile(mode === "file name");
+  renderAll();
+}
+
 // ---------------------------------------------------------------- folder actions
 
 async function newFolder(): Promise<void> {
@@ -347,6 +365,7 @@ async function openVault(root: string): Promise<void> {
   if (vault) await vault.flush();
   const next = new Vault(backend, root);
   next.onError = (m) => toast(m);
+  next.titleFromFile = settings().titleSource === "file name";
   await next.load();
   vault = next;
 }
@@ -488,6 +507,7 @@ function noteCommands(n: Note): Command[] {
   return [
     { label: "find in note", hint: "ctrl+f", run: () => find.open() },
     { label: n.pinned ? "unpin note" : "pin note", run: () => togglePin(n) },
+    { label: "rename note", hint: "file name", run: () => void renameNote(n) },
     {
       label: "move note to",
       sub: () => ({
@@ -605,6 +625,20 @@ function rootMenu(): Menu {
           (["narrow", "normal", "wide"] as const).map((v) => ({ label: v, value: v })),
           () => s.lineWidth,
           (v) => setSetting("lineWidth", v),
+        ),
+    },
+    {
+      label: "note titles",
+      hint: s.titleSource === "file name" ? "from file name" : "from first line",
+      sub: () =>
+        choice<TitleSource>(
+          "note titles come from",
+          [
+            { label: "first line (files are renamed to match)", value: "first line" },
+            { label: "file name (files are never renamed; good for obsidian vaults)", value: "file name" },
+          ],
+          () => s.titleSource,
+          setTitleMode,
         ),
     },
     { label: "smooth caret", sub: () => choice("smooth caret", onOff, () => s.smoothCaret, (v) => setSetting("smoothCaret", v)) },

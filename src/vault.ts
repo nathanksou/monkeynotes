@@ -6,7 +6,7 @@
  * are named after their title and renamed as the title changes; files that came
  * from elsewhere keep whatever name they had.
  */
-import type { Backend, ExtDir, ExtFile, Scan } from "./backend";
+import type { Backend, ExtDir, ExtFile, FileEntry, Scan } from "./backend";
 import { type Folder, META_FILE, type Note, ROOT, TRASH_DIR, TRASH_TTL_MS, titleLine, uid } from "./model";
 
 interface Meta {
@@ -40,6 +40,8 @@ export class Vault {
   private dirty = new Set<Note>();
   private timer = 0;
   private lastMeta = "";
+  /** Title notes by file name instead of first line (see setTitleFromFile). */
+  titleFromFile = false;
   /** Called with a message when a file operation fails. */
   onError: (msg: string) => void = (m) => console.error(m);
 
@@ -55,24 +57,13 @@ export class Vault {
     this.folders = this.foldersFrom(scan);
     const meta = this.parseMeta(scan.meta);
     const pinned = new Set(meta.pinned ?? []);
-    this.notes = scan.files.map((f) => {
-      const inTrash = dirOf(f.path) === TRASH_DIR;
-      const t = inTrash ? meta.trash?.[baseOf(f.path)] : undefined;
-      return {
-        id: uid(),
-        path: f.path,
-        folderId: inTrash ? (t?.from ?? ROOT) : dirOf(f.path),
-        body: f.body,
-        createdAt: f.created,
-        updatedAt: f.modified,
-        pinned: pinned.has(f.path) || undefined,
-        deletedAt: inTrash ? (t?.deletedAt ?? f.modified) : undefined,
-        autoName: stemOf(f.path) === safeName(titleLine(f.body)),
-      };
-    });
-    // Recently deleted notes are kept for 30 days.
+    this.notes = scan.files.map((f) => this.fromFile(f, meta, pinned));
+    // Recently deleted notes are purged after 30 days, but only ones this app put
+    // there: another app's .trash (Obsidian uses one too) is never purged.
     const cutoff = Date.now() - TRASH_TTL_MS;
-    for (const n of this.notes.filter((x) => x.deletedAt && x.deletedAt < cutoff)) this.destroy(n);
+    for (const n of this.notes.filter((x) => x.deletedAt && !x.foreignTrash && x.deletedAt < cutoff)) {
+      this.destroy(n);
+    }
     this.lastMeta = JSON.stringify(this.buildMeta());
   }
 
@@ -98,18 +89,7 @@ export class Vault {
           if (existing.id === openId) openChanged = true;
         }
       } else {
-        const inTrash = dirOf(f.path) === TRASH_DIR;
-        const t = inTrash ? meta.trash?.[baseOf(f.path)] : undefined;
-        const n: Note = {
-          id: uid(),
-          path: f.path,
-          folderId: inTrash ? (t?.from ?? ROOT) : dirOf(f.path),
-          body: f.body,
-          createdAt: f.created,
-          updatedAt: f.modified,
-          deletedAt: inTrash ? (t?.deletedAt ?? f.modified) : undefined,
-          autoName: stemOf(f.path) === safeName(titleLine(f.body)),
-        };
+        const n = this.fromFile(f, meta, new Set());
         this.notes.push(n);
         seen.add(n);
       }
@@ -117,6 +97,51 @@ export class Vault {
     // Files that disappeared; unsaved new notes stay.
     this.notes = this.notes.filter((n) => !n.path || seen.has(n) || this.dirty.has(n));
     return openChanged;
+  }
+
+  private fromFile(f: FileEntry, meta: Meta, pinned: Set<string>): Note {
+    const inTrash = dirOf(f.path) === TRASH_DIR;
+    const t = inTrash ? meta.trash?.[baseOf(f.path)] : undefined;
+    return {
+      id: uid(),
+      path: f.path,
+      folderId: inTrash ? (t?.from ?? ROOT) : dirOf(f.path),
+      body: f.body,
+      createdAt: f.created,
+      updatedAt: f.modified,
+      pinned: pinned.has(f.path) || undefined,
+      deletedAt: inTrash ? (t?.deletedAt ?? f.modified) : undefined,
+      foreignTrash: inTrash && !t ? true : undefined,
+      autoName: this.followsTitle(f.path, f.body),
+    };
+  }
+
+  /** Whether a file's name should keep tracking its title. */
+  private followsTitle(path: string, body: string): boolean {
+    return !this.titleFromFile && stemOf(path) === safeName(titleLine(body));
+  }
+
+  /**
+   * In "file name" title mode existing files are never renamed automatically,
+   * so links from other apps (like Obsidian's [[links]]) keep working.
+   */
+  setTitleFromFile(on: boolean): void {
+    this.titleFromFile = on;
+    for (const n of this.notes) if (n.path) n.autoName = this.followsTitle(n.path, n.body);
+  }
+
+  /** Give a note's file a name of the user's choosing; it stops following the title. */
+  renameNote(n: Note, name: string): void {
+    const dir = n.deletedAt ? TRASH_DIR : n.folderId;
+    const target = this.uniquePath(dir, safeName(name), n.path ? extOf(n.path) : ".md", n);
+    const from = n.path;
+    const body = n.body;
+    n.autoName = false;
+    n.path = target;
+    this.dirty.delete(n);
+    if (from && from !== target) this.run("rename", () => this.be.rename(this.root, from, target));
+    this.run("save", () => this.be.write(this.root, target, body));
+    this.schedule(); // pins / trash metadata are keyed by path
   }
 
   private foldersFrom(scan: Scan): Folder[] {
@@ -188,7 +213,7 @@ export class Vault {
   private buildMeta(): Meta {
     const trash: Meta["trash"] = {};
     for (const n of this.notes) {
-      if (n.deletedAt && n.path) trash[baseOf(n.path)] = { from: n.folderId, deletedAt: n.deletedAt };
+      if (n.deletedAt && n.path && !n.foreignTrash) trash[baseOf(n.path)] = { from: n.folderId, deletedAt: n.deletedAt };
     }
     return { pinned: this.notes.filter((n) => n.pinned && n.path).map((n) => n.path), trash };
   }
@@ -267,6 +292,7 @@ export class Vault {
   restore(n: Note): void {
     if (!n.deletedAt) return;
     n.deletedAt = undefined;
+    n.foreignTrash = undefined;
     if (!this.folders.some((f) => f.id === n.folderId)) n.folderId = ROOT;
     this.touch(n);
   }

@@ -181,7 +181,14 @@ export class Palette {
     if (!menu) return;
     this.input.placeholder = menu.title;
     const q = this.input.value.trim().toLowerCase();
-    this.filtered = q ? menu.items.filter((c) => fuzzy(c.label.toLowerCase(), q)) : menu.items;
+    if (q) {
+      // Exact substring matches first, then looser in-order matches.
+      const exact = menu.items.filter((c) => c.label.toLowerCase().includes(q));
+      const loose = menu.items.filter((c) => !exact.includes(c) && fuzzy(c.label.toLowerCase(), q));
+      this.filtered = [...exact, ...loose];
+    } else {
+      this.filtered = menu.items;
+    }
     if (this.index >= this.filtered.length) this.index = 0;
 
     const frag = document.createDocumentFragment();
@@ -223,7 +230,6 @@ export class Palette {
 
 /** Every query character appears in order. */
 function fuzzy(text: string, q: string): boolean {
-  if (text.includes(q)) return true;
   let i = 0;
   for (const ch of text) if (ch === q[i]) i++;
   return i === q.length;

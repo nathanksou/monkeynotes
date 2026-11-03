@@ -16,12 +16,15 @@ export interface Note {
   pinned?: boolean;
   /** Set when the note is in "recently deleted". folderId is where it came from. */
   deletedAt?: number;
+  /** In .trash/ but not put there by this app (e.g. Obsidian's trash): never auto-purged. */
+  foreignTrash?: boolean;
   /** The file name follows the note's title (true for notes made in the app). */
   autoName: boolean;
 }
 
 export type FontFamily = "roboto mono" | "system mono" | "sans";
 export type LineWidth = "narrow" | "normal" | "wide";
+export type TitleSource = "first line" | "file name";
 
 export interface Settings {
   theme: string;
@@ -33,6 +36,7 @@ export interface Settings {
   focusMode: boolean;
   spellcheck: boolean;
   zen: boolean;
+  titleSource: TitleSource;
 }
 
 export interface AppState {
@@ -61,6 +65,7 @@ export const defaultSettings: Settings = {
   focusMode: true,
   spellcheck: false,
   zen: false,
+  titleSource: "first line",
 };
 
 export const WELCOME = `welcome to monkeynotes
@@ -102,13 +107,24 @@ export function titleLine(body: string): string {
   return line.replace(/^#+\s*/, "").trim();
 }
 
+let titleSource: TitleSource = "first line";
+export function setTitleSource(t: TitleSource): void {
+  titleSource = t;
+}
+
+const fileStem = (path: string) => path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+
 export function noteTitle(n: Note): string {
+  if (titleSource === "file name" && n.path) return fileStem(n.path);
   return titleLine(n.body).slice(0, 80) || "new note";
 }
 
 export function notePreview(n: Note): string {
   const lines = n.body.split("\n").filter((l) => l.trim() !== "");
-  return (lines[1] ?? "").trim().slice(0, 120);
+  // In file-name mode the first line isn't the title, so it is the preview,
+  // unless it just repeats the title as a heading.
+  const skip = titleSource === "file name" && n.path ? (titleLine(lines[0] ?? "") === noteTitle(n) ? 1 : 0) : 1;
+  return (lines[skip] ?? "").trim().slice(0, 120);
 }
 
 export function wordCount(s: string): number {

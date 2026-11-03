@@ -47,9 +47,14 @@ monkeynotes/
   .monkeynotes.json           pins and trash bookkeeping
 ```
 
-- A note made in the app is named after its first line, and the file is renamed when the title changes. Files you named yourself keep their names.
+- A note made in the app is named after its first line, and the file is renamed when the title changes. Files you named yourself keep their names. Use `rename note` to pick a file name yourself.
+- Prefer file names as titles? Set `note titles` to `file name` in the command line. Files are then never renamed automatically.
 - Edits made outside the app show up when you switch back to it.
 - Every write goes to a temp file first and is then renamed into place, so a crash can't leave a half-written note.
+
+### using an obsidian vault
+
+You can point monkeynotes at an [Obsidian](https://obsidian.md) vault with `change notes folder`. Set `note titles` to `file name` so titles match Obsidian's and files are never renamed, which keeps `[[links]]` working. Notes in Obsidian's `.trash` show up under recently deleted but are never deleted automatically. Only top-level folders are shown.
 
 App settings (theme, font and so on) are stored separately in the app's data folder (`~/Library/Application Support/com.nathansou.monkeynotes` on macOS, `%APPDATA%\com.nathansou.monkeynotes` on Windows, `~/.local/share/com.nathansou.monkeynotes` on Linux). Notes from v0.1 are moved into the notes folder automatically on first launch.
 
