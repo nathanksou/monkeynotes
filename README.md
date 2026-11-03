@@ -111,6 +111,10 @@ src-tauri/
 
 The UI runs in a webview and never handles absolute paths. The Rust side owns the notes folder: it's chosen in a native folder dialog and remembered there. Every note path from the UI is relative and checked so it can't leave that folder. Files outside it are only read or written through native open and save dialogs. The webview can't call the dialog or file-system plugins directly, and it can only open links to this repo. All file commands run off the main thread.
 
+### test builds
+
+To get installers without making a release, open the repo's Actions tab, pick **build**, and click **Run workflow**. When it finishes, the macOS, Windows and Linux installers are attached to the run as downloads.
+
 ### releases
 
 Push a tag such as `v0.1.0`. The `release` workflow then builds macOS (Apple Silicon and Intel), Windows and Linux installers and attaches them to a draft GitHub release. The builds are unsigned, so macOS Gatekeeper and Windows SmartScreen will warn on first launch.
