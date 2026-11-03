@@ -9,6 +9,7 @@ import { isNotFound } from "./errors";
 import { Find } from "./find";
 import { linkAt, linkRanges } from "./links";
 import { ParagraphLayer } from "./paragraphs";
+import { stemOf, swapPrefix } from "./paths";
 import {
   ALL,
   type AppState,
@@ -106,13 +107,23 @@ function toast(msg: string, action?: () => void, ms = 4000): void {
   toastTimer = window.setTimeout(() => (els.toast.hidden = true), ms);
 }
 
+/** Lower-cased note text for search, recomputed only when a note's text changes. */
+const lowerCache = new WeakMap<Note, { body: string; lower: string }>();
+function lowerBody(n: Note): string {
+  const hit = lowerCache.get(n);
+  if (hit && hit.body === n.body) return hit.lower;
+  const lower = n.body.toLowerCase();
+  lowerCache.set(n, { body: n.body, lower });
+  return lower;
+}
+
 function notesInView(): Note[] {
   const { folderId } = view();
   const q = els.search.value.trim().toLowerCase();
   return vault.notes
     .filter((n) => (folderId === TRASH ? !!n.deletedAt : !n.deletedAt))
     .filter((n) => folderId === ALL || folderId === TRASH || n.folderId === folderId)
-    .filter((n) => !q || n.body.toLowerCase().includes(q))
+    .filter((n) => !q || lowerBody(n).includes(q))
     .sort(sortNotes);
 }
 
@@ -210,6 +221,16 @@ function renderStats(): void {
       ? "recently deleted · restore it from the command line"
       : `${folderPath(n.folderId)} · ${wordCount(n.body)} words · edited ${formatDate(n.updatedAt)}`
     : "";
+}
+
+let statsTimer = 0;
+/** While typing, the footer (and its whole-note word count) updates at most every 250ms. */
+function renderStatsSoon(): void {
+  if (statsTimer) return;
+  statsTimer = window.setTimeout(() => {
+    statsTimer = 0;
+    renderStats();
+  }, 250);
 }
 
 let listTimer = 0;
@@ -335,7 +356,7 @@ function stepNote(dir: 1 | -1): void {
 }
 
 async function renameNote(n: Note): Promise<void> {
-  const current = n.path ? n.path.slice(n.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "") : noteTitle(n);
+  const current = n.path ? stemOf(n.path) : noteTitle(n);
   const name = await palette.ask("rename note file", current, focusEditor);
   if (!name) return;
   vault.renameNote(n, name);
@@ -358,9 +379,6 @@ async function newFolder(parent: string = ROOT): Promise<void> {
   openFolder(vault.createFolder(name, parent).id);
 }
 
-/** Swap a folder id prefix after a rename. */
-const swapPrefix = (x: string, from: string, to: string) =>
-  x === from ? to : x.startsWith(from + "/") ? to + x.slice(from.length) : x;
 
 function toggleCollapsed(id: string): void {
   const c = view().collapsed;
@@ -431,6 +449,13 @@ async function openVault(): Promise<void> {
   const next = new Vault(backend);
   next.onError = (m) => toast(m, undefined, 6000);
   next.titleFromFile = settings().titleSource === "file name";
+  // A folder rename that failed on disk was undone: point the view back at the old name.
+  next.onFolderRenameReverted = (from, to) => {
+    view().folderId = swapPrefix(view().folderId, to, from);
+    view().collapsed = view().collapsed.map((c) => swapPrefix(c, to, from));
+    renderAll();
+    saveState();
+  };
   await next.load();
   vault = next;
   notesDirPath = await backend.notesDir();
@@ -556,11 +581,12 @@ function hideStats(): void {
 /** Open the note a [[link]] points at, creating it if it doesn't exist (like Obsidian). */
 function followLink(target: string): void {
   const t = target.toLowerCase();
-  const stem = (p: string) => p.replace(/\.[^./]+$/, "").toLowerCase();
+  // "folder/name" first, then a bare file name, then a title
+  const pathNoExt = (p: string) => p.replace(/\.[^./]+$/, "").toLowerCase();
   const live = vault.notes.filter((n) => !n.deletedAt);
   let n =
-    live.find((x) => x.path && stem(x.path) === t) ??
-    live.find((x) => x.path && stem(x.path.slice(x.path.lastIndexOf("/") + 1)) === t) ??
+    live.find((x) => x.path && pathNoExt(x.path) === t) ??
+    live.find((x) => x.path && stemOf(x.path).toLowerCase() === t) ??
     live.find((x) => noteTitle(x).toLowerCase() === t);
   if (!n) {
     const from = current();
@@ -1104,17 +1130,43 @@ async function bindWindowClose(): Promise<void> {
 
 // ---------------------------------------------------------------- boot
 
-/** Shown instead of the app if it's opened outside the desktop shell. */
-function showNotDesktop(): void {
+/** A full-window message, for when the app can't start. */
+function showScreen(heading: string, message: string, action?: { label: string; run: () => void }): void {
   const box = document.createElement("div");
   box.className = "not-desktop";
   const title = document.createElement("h1");
-  title.textContent = "monkeynotes is a desktop app";
+  title.textContent = heading;
   const text = document.createElement("p");
-  text.textContent = "build it from github.com/nathanksou/monkeynotes and run it from there.";
+  text.textContent = message;
   box.append(title, text);
+  if (action) {
+    const button = document.createElement("button");
+    button.className = "screen-action";
+    button.textContent = action.label;
+    button.addEventListener("click", action.run);
+    box.append(button);
+  }
   document.body.replaceChildren(box);
   document.body.classList.add("ready");
+}
+
+/** Shown instead of the app if it's opened outside the desktop shell. */
+function showNotDesktop(): void {
+  showScreen("monkeynotes is a desktop app", "build it from github.com/nathanksou/monkeynotes and run it from there.");
+}
+
+/** The notes folder can't be read at all: say why and offer another folder. */
+function showFolderError(e: unknown): void {
+  showScreen("couldn't open your notes folder", String(e), {
+    label: "choose another folder",
+    run: async () => {
+      try {
+        if (await backend.chooseNotesDir()) location.reload();
+      } catch (err) {
+        showFolderError(err);
+      }
+    },
+  });
 }
 
 async function main(): Promise<void> {
@@ -1143,11 +1195,15 @@ async function main(): Promise<void> {
   try {
     await openVault();
   } catch (e) {
-    if (!isNotFound(e)) throw e;
+    if (!isNotFound(e)) return showFolderError(e);
     // The chosen folder is missing (e.g. an unplugged drive). Use the default
     // folder for this session only, so the choice comes back with the drive.
-    await backend.resetNotesDir(false);
-    await openVault();
+    try {
+      await backend.resetNotesDir(false);
+      await openVault();
+    } catch (err) {
+      return showFolderError(err);
+    }
     const missing = String(e).replace(/^NOT_FOUND:\s*/, "");
     setTimeout(() => toast(`notes folder not found: ${missing}. using ${notesDirPath} until next launch`, undefined, 10000), 500);
   }
@@ -1176,7 +1232,7 @@ async function main(): Promise<void> {
       vault.setBody(n, value);
       find.refresh();
       paintLinks();
-      renderStats();
+      renderStatsSoon();
       renderSoon();
     },
     onType,

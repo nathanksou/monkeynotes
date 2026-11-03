@@ -17,6 +17,7 @@
  */
 import type { Backend, ExtDir, ExtFile, FileEntry, Scan } from "./backend";
 import { isExists } from "./errors";
+import { baseOf, dirOf, extOf, join, stemOf, swapPrefix } from "./paths";
 import { type Folder, META_FILE, type Note, ROOT, TRASH_DIR, TRASH_TTL_MS, titleLine, uid } from "./model";
 
 interface Meta {
@@ -38,15 +39,6 @@ export function safeName(title: string, fallback = "untitled"): string {
   if (RESERVED.test(name)) name += "_";
   return name;
 }
-
-const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ROOT);
-const baseOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-const stemOf = (path: string) => baseOf(path).replace(/\.[^.]+$/, "");
-const extOf = (path: string) => /\.[^./]+$/.exec(path)?.[0] ?? ".md";
-const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
-/** `x` with the folder prefix `from` replaced by `to`. */
-const swapPrefix = (x: string, from: string, to: string) =>
-  x === from ? to : x.startsWith(from + "/") ? to + x.slice(from.length) : x;
 
 /** Root first, then depth-first alphabetical, so children follow their parent. */
 export function sortFolders(folders: Folder[]): Folder[] {
@@ -75,6 +67,14 @@ export class Vault {
   private mtimes = new Map<string, number>();
   /** Folder renames queued but not yet done on disk, as [old id, new id]. */
   private pendingRenames: [string, string][] = [];
+  /** Folders created / deleted in memory whose disk operation hasn't run yet. */
+  private pendingCreates = new Set<string>();
+  private pendingDeletes = new Set<string>();
+  /** Bumped on every in-memory edit; `edited` remembers each note's last bump. */
+  private clock = 0;
+  private edited = new WeakMap<Note, number>();
+  /** Called when a folder rename fails on disk and is undone (old id, new id). */
+  onFolderRenameReverted: (from: string, to: string) => void = () => {};
   /** Requested file names for imported notes that haven't been written yet. */
   private nameHints = new WeakMap<Note, string>();
 
@@ -100,12 +100,26 @@ export class Vault {
 
   /**
    * Pick up changes made outside the app (another editor, a sync client).
-   * Only files whose modified time changed are re-read. Notes with unsaved
-   * changes always win over the disk. Returns true if `openId`'s text changed.
+   * Only files whose modified time changed are re-read. Returns true if
+   * `openId`'s text changed.
+   *
+   * The scan runs on the file queue, so no save, rename or delete can happen
+   * while it reads; paths in memory match the disk it saw. Notes edited while
+   * it was reading always keep their in-memory text.
    */
   async reload(openId: string | null): Promise<boolean> {
     await this.flush();
-    const scan = await this.be.scan(Object.fromEntries(this.mtimes));
+    const mark = this.clock;
+    const result = this.queue.then(async () => {
+      const scan = await this.be.scan(Object.fromEntries(this.mtimes));
+      return this.reconcile(scan, openId, mark);
+    });
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  private reconcile(scan: Scan, openId: string | null, mark: number): boolean {
+    const editedSince = (n: Note) => (this.edited.get(n) ?? 0) > mark;
     this.folders = this.foldersFrom(scan);
     this.occupied.clear();
     const byPath = new Map(this.notes.filter((n) => n.path).map((n) => [n.path, n]));
@@ -116,19 +130,20 @@ export class Vault {
       const existing = byPath.get(f.path);
       if (existing) {
         seen.add(existing);
-        if (f.body !== null && existing.body !== f.body && !this.dirty.has(existing)) {
+        if (f.body !== null && existing.body !== f.body && !this.dirty.has(existing) && !editedSince(existing)) {
           existing.body = f.body;
           existing.updatedAt = f.modified;
           if (existing.id === openId) openChanged = true;
         }
       } else if (f.body !== null) {
         const n = this.fromFile(f, f.body, meta, new Set());
+        n.folderId = this.memoryFolder(n.folderId);
         this.notes.push(n);
         seen.add(n);
       }
     }
-    // Files that disappeared; notes not yet on disk (or failing to save) stay.
-    this.notes = this.notes.filter((n) => !n.path || seen.has(n) || this.dirty.has(n));
+    // Files that disappeared; notes not yet on disk, failing to save or just edited stay.
+    this.notes = this.notes.filter((n) => !n.path || seen.has(n) || this.dirty.has(n) || editedSince(n));
     this.rememberTimes(scan);
     return openChanged;
   }
@@ -168,8 +183,24 @@ export class Vault {
     for (const n of this.notes) if (n.path) n.autoName = this.followsTitle(n.path, n.body);
   }
 
+  /**
+   * Folders as the app should show them: what the disk has, with folder
+   * creates, renames and deletes that are still queued applied on top.
+   */
   private foldersFrom(scan: Scan): Folder[] {
-    return sortFolders([{ id: ROOT, name: "notes" }, ...scan.dirs.map((d) => ({ id: d, name: baseOf(d) }))]);
+    const ids = new Set<string>();
+    for (const d of scan.dirs) {
+      const id = this.memoryFolder(d);
+      if (![...this.pendingDeletes].some((x) => id === x || id.startsWith(x + "/"))) ids.add(id);
+    }
+    for (const id of this.pendingCreates) ids.add(id);
+    return sortFolders([{ id: ROOT, name: "notes" }, ...[...ids].map((id) => ({ id, name: baseOf(id) }))]);
+  }
+
+  /** A folder id as found on disk, with queued folder renames applied (the reverse of diskFolder). */
+  private memoryFolder(id: string): string {
+    for (const [from, to] of this.pendingRenames) id = swapPrefix(id, from, to);
+    return id;
   }
 
   private parseMeta(raw: string | null): Meta {
@@ -196,17 +227,28 @@ export class Vault {
     return p;
   }
 
-  /** Write everything pending and wait for the disk to catch up. */
+  /**
+   * Write everything pending and wait for the disk to catch up. Keeps going
+   * until nothing is left, since a queued save can itself make the metadata
+   * stale (e.g. by renaming a pinned note). Stops early if something failed, so
+   * a broken disk doesn't spin forever (the failed notes stay pending).
+   */
   async flush(): Promise<void> {
     clearTimeout(this.timer);
-    const pending = [...this.dirty];
-    this.dirty.clear();
-    for (const n of pending) this.saveNote(n);
-    if (this.metaDirty) {
-      this.metaDirty = false;
-      this.run("save metadata", () => this.writeMeta());
+    const failuresBefore = this.failures;
+    for (;;) {
+      const pending = [...this.dirty];
+      this.dirty.clear();
+      for (const n of pending) this.saveNote(n);
+      if (this.metaDirty) {
+        this.metaDirty = false;
+        this.run("save metadata", () => this.writeMeta());
+      }
+      const q = this.queue;
+      await q;
+      const settled = q === this.queue && !this.metaDirty && this.dirty.size === 0;
+      if (settled || this.failures !== failuresBefore) return;
     }
-    await this.queue;
   }
 
   private schedule(): void {
@@ -286,7 +328,11 @@ export class Vault {
 
   private movedTo(n: Note, path: string): void {
     if (n.path === path) return;
-    if (n.pinned || n.deletedAt) this.metaDirty = true;
+    if (n.pinned || n.deletedAt) {
+      // flush() picks this up before it returns; the timer covers saves made outside a flush
+      this.metaDirty = true;
+      this.schedule();
+    }
     n.path = path;
   }
 
@@ -340,6 +386,7 @@ export class Vault {
 
   private touch(n: Note): void {
     this.dirty.add(n);
+    this.edited.set(n, ++this.clock);
     this.schedule();
   }
 
@@ -421,7 +468,9 @@ export class Vault {
     const id = this.uniqueFolder(parent, safeName(name, "folder"));
     const f = { id, name: baseOf(id) };
     this.folders = sortFolders([...this.folders, f]);
-    this.run("create folder", () => this.be.mkdir(id));
+    this.pendingCreates.add(id);
+    const done = () => this.pendingCreates.delete(id);
+    this.run("create folder", () => this.be.mkdir(id).finally(done), done);
     return f;
   }
 
@@ -449,6 +498,7 @@ export class Vault {
       () => {
         done();
         relabel(next, id); // the disk didn't change: put the old names back
+        this.onFolderRenameReverted(id, next);
       },
     );
     this.schedule();
@@ -464,6 +514,7 @@ export class Vault {
       n.folderId = ROOT;
     }
     this.folders = this.folders.filter((f) => !ids.includes(f.id));
+    this.pendingDeletes.add(id);
     // deepest first, so parents are empty by the time we reach them
     const order = [...ids].sort((a, b) => b.split("/").length - a.split("/").length);
     void this.flush().then(() => {
@@ -474,6 +525,7 @@ export class Vault {
           }),
         );
       }
+      this.run("remove folder", async () => void this.pendingDeletes.delete(id));
     });
   }
 

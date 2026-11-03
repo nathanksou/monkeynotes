@@ -5,6 +5,8 @@ export class MemoryBackend implements Backend {
   readonly desktop = false;
   files = new Map<string, { body: string; created: number; modified: number }>();
   dirs = new Set<string>();
+  /** Runs in the middle of a scan, to simulate the user acting while it reads. */
+  duringScan: (() => void) | null = null;
   /** Make the next write to a path fail, as a full disk or locked file would. */
   failWrites = new Set<string>();
   private clock = 1_000_000;
@@ -46,8 +48,24 @@ export class MemoryBackend implements Backend {
   }
 
   async scan(known: Record<string, number> = {}): Promise<Scan> {
+    const snapshot = new Map(this.files);
+    const dirs = [...this.dirs].sort();
+    const hook = this.duringScan;
+    this.duringScan = null;
+    hook?.();
+    await new Promise((r) => setTimeout(r, 0)); // let anything the hook queued try to run
+    const files = this.files;
+    this.files = snapshot; // report what was on disk when the scan started
+    try {
+      return this.result(known, dirs);
+    } finally {
+      this.files = files;
+    }
+  }
+
+  private result(known: Record<string, number>, dirs: string[]): Scan {
     return {
-      dirs: [...this.dirs].sort(),
+      dirs,
       files: [...this.files]
         .filter(([p]) => p !== ".monkeynotes.json")
         .map(([path, f]) => ({ path, ...f, body: known[path] === f.modified ? null : f.body })),

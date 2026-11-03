@@ -55,11 +55,47 @@ fn app_dir(app: &AppHandle) -> Res<PathBuf> {
 /// Join a relative path onto `root`, refusing anything that could escape it.
 fn resolve(root: &Path, rel: &str) -> Res<PathBuf> {
     let rel_path = Path::new(rel);
+    // On Windows "\\" is also a separator (it would slip past the "/" checks in
+    // note_path) and ":" can address alternate data streams.
+    if cfg!(windows) && rel.contains(['\\', ':']) {
+        return Err(format!("invalid path: {rel}"));
+    }
     let safe = !rel.is_empty() && rel_path.components().all(|c| matches!(c, Component::Normal(_)));
     if !safe {
         return Err(format!("invalid path: {rel}"));
     }
     Ok(root.join(rel_path))
+}
+
+/// A note file inside the notes folder: a .md/.markdown/.txt file in a visible
+/// folder, or directly inside `.trash/`. With `allow_meta`, also the app's own
+/// metadata file. This keeps the UI away from things like `.git/hooks` or an
+/// Obsidian vault's `.obsidian/plugins`, and from non-note files.
+fn note_path(root: &Path, rel: &str, allow_meta: bool) -> Res<PathBuf> {
+    let full = resolve(root, rel)?;
+    if allow_meta && rel == META_FILE {
+        return Ok(full);
+    }
+    let parts: Vec<&str> = rel.split('/').collect();
+    let (dirs, _) = parts.split_at(parts.len() - 1);
+    let dirs_ok = match dirs {
+        [first] if *first == TRASH_DIR => true,
+        _ => dirs.iter().all(|d| !is_hidden(d)),
+    };
+    let name = parts[parts.len() - 1];
+    if !dirs_ok || is_hidden(name) || !is_note(Path::new(name)) {
+        return Err(format!("not a note path: {rel}"));
+    }
+    Ok(full)
+}
+
+/// A folder inside the notes folder (no hidden folders, including `.trash`).
+fn folder_path(root: &Path, rel: &str) -> Res<PathBuf> {
+    let full = resolve(root, rel)?;
+    if rel.split('/').any(is_hidden) {
+        return Err(format!("not a notes folder: {rel}"));
+    }
+    Ok(full)
 }
 
 fn read_opt(path: &Path) -> Res<Option<String>> {
@@ -326,7 +362,7 @@ async fn scan(dir: State<'_, NotesDir>, known: Option<HashMap<String, u64>>) -> 
 /// already exists, so a note never overwrites a file the app doesn't know about.
 #[tauri::command]
 async fn write_file(dir: State<'_, NotesDir>, path: String, contents: String, create_new: bool) -> Res<()> {
-    let target = resolve(&dir.root(), &path)?;
+    let target = note_path(&dir.root(), &path, true)?;
     if create_new && target.exists() {
         return Err(format!("{EEXIST}: {path}"));
     }
@@ -360,16 +396,21 @@ fn rename_no_clobber(src: &Path, dst: &Path, from: &str, to: &str) -> Res<()> {
     fs::rename(&tmp, dst).map_err(err)
 }
 
-/// Rename a note or folder. Never overwrites (EEXIST).
+/// Rename a note, or a folder. Never overwrites (EEXIST).
 #[tauri::command]
 async fn rename_path(dir: State<'_, NotesDir>, from: String, to: String) -> Res<()> {
     let root = dir.root();
-    rename_no_clobber(&resolve(&root, &from)?, &resolve(&root, &to)?, &from, &to)
+    let (src, dst) = if resolve(&root, &from)?.is_dir() {
+        (folder_path(&root, &from)?, folder_path(&root, &to)?)
+    } else {
+        (note_path(&root, &from, false)?, note_path(&root, &to, false)?)
+    };
+    rename_no_clobber(&src, &dst, &from, &to)
 }
 
 #[tauri::command]
 async fn remove_file(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    match fs::remove_file(resolve(&dir.root(), &path)?) {
+    match fs::remove_file(note_path(&dir.root(), &path, false)?) {
         Err(e) if e.kind() != ErrorKind::NotFound => Err(err(e)),
         _ => Ok(()),
     }
@@ -377,13 +418,13 @@ async fn remove_file(dir: State<'_, NotesDir>, path: String) -> Res<()> {
 
 #[tauri::command]
 async fn make_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    fs::create_dir_all(resolve(&dir.root(), &path)?).map_err(err)
+    fs::create_dir_all(folder_path(&dir.root(), &path)?).map_err(err)
 }
 
 /// Remove a folder. Only succeeds when it is empty, so non-note files are never lost.
 #[tauri::command]
 async fn remove_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    match fs::remove_dir(resolve(&dir.root(), &path)?) {
+    match fs::remove_dir(folder_path(&dir.root(), &path)?) {
         Err(e) if e.kind() != ErrorKind::NotFound => Err(err(e)),
         _ => Ok(()),
     }
@@ -557,6 +598,31 @@ mod tests {
         for bad in ["", "..", "../a.md", "ideas/../../a.md", "/etc/passwd", "./a.md"] {
             assert!(resolve(root, bad).is_err(), "{bad} should be rejected");
         }
+    }
+
+    #[test]
+    fn note_paths_stay_on_notes() {
+        let root = Path::new("/notes");
+        for ok in ["a.md", "ideas/b.txt", "x/y/z.markdown", ".trash/old.md"] {
+            assert!(note_path(root, ok, false).is_ok(), "{ok} should be allowed");
+        }
+        for bad in [
+            ".git/hooks/pre-commit",
+            ".obsidian/plugins/x/main.js",
+            "ideas/.hidden.md",
+            ".trash/sub/a.md",
+            "image.png",
+            "script.sh",
+            ".monkeynotes.json",
+            "a/.git/config.md",
+        ] {
+            assert!(note_path(root, bad, false).is_err(), "{bad} should be rejected");
+        }
+        assert!(note_path(root, ".monkeynotes.json", true).is_ok());
+        assert!(folder_path(root, "projects/2026").is_ok());
+        assert!(folder_path(root, ".git").is_err());
+        assert!(folder_path(root, ".trash").is_err());
+        assert!(folder_path(root, "a/.obsidian").is_err());
     }
 
     #[test]

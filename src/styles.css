@@ -954,3 +954,16 @@ kbd {
   font-weight: 400;
   color: var(--text);
 }
+
+.screen-action {
+  margin-top: 1.25rem;
+  justify-self: center;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  background: var(--sub-alt);
+  color: var(--text);
+}
+
+.screen-action:hover {
+  color: var(--main);
+}

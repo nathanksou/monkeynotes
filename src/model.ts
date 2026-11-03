@@ -1,3 +1,5 @@
+import { stemOf } from "./paths";
+
 /** A folder is a directory directly inside the notes folder. The root itself has id "". */
 export interface Folder {
   id: string;
@@ -138,10 +140,8 @@ export function setTitleSource(t: TitleSource): void {
   titleSource = t;
 }
 
-const fileStem = (path: string) => path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
-
 export function noteTitle(n: Note): string {
-  if (titleSource === "file name" && n.path) return fileStem(n.path);
+  if (titleSource === "file name" && n.path) return stemOf(n.path);
   return titleLine(n.body).slice(0, 80) || "new note";
 }
 

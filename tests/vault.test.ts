@@ -271,3 +271,72 @@ describe("never losing data", () => {
     expect(bodiesSent).toBe(1);
   });
 });
+
+describe("reload while the user keeps working", () => {
+  it("keeps text typed while the folder is being re-read", async () => {
+    const { be, v } = await open({ "a.md": "a" });
+    const n = v.notes[0];
+    v.setBody(n, "a\nfirst edit"); // saved before the reload, so the scan re-reads it
+    await v.flush();
+    be.duringScan = () => {
+      v.setBody(n, "a\nfirst edit\ntyped during the scan");
+      void v.flush(); // the debounce timer firing mid-scan
+    };
+    const changed = await v.reload(n.id);
+    await v.flush();
+    expect(changed).toBe(false);
+    expect(n.body).toBe("a\nfirst edit\ntyped during the scan");
+    expect(be.files.get("a.md")?.body).toBe("a\nfirst edit\ntyped during the scan");
+  });
+
+  it("keeps a new note whose first save happens during the re-read", async () => {
+    const { be, v } = await open({ "a.md": "a" });
+    let fresh!: ReturnType<typeof v.create>;
+    be.duringScan = () => {
+      fresh = v.create("");
+      v.setBody(fresh, "brand new\nnote");
+      void v.flush();
+    };
+    await v.reload(null);
+    await v.flush();
+    expect(v.notes).toContain(fresh);
+    expect(be.files.get("brand new.md")?.body).toBe("brand new\nnote");
+    v.setBody(fresh, "brand new\nnote, still saving");
+    await v.flush();
+    expect(be.files.get("brand new.md")?.body).toBe("brand new\nnote, still saving");
+  });
+
+  it("keeps a folder created during the re-read", async () => {
+    const { v } = await open({ "a.md": "a" });
+    const be = (v as unknown as { be: MemoryBackend }).be;
+    be.duringScan = () => void v.createFolder("new folder");
+    await v.reload(null);
+    expect(v.folders.map((f) => f.id)).toContain("new folder");
+  });
+});
+
+describe("metadata after the last save", () => {
+  it("records a pinned note's new name even when the rename is the final write", async () => {
+    const { be, v } = await open({ "old.md": "old" });
+    const n = v.notes[0];
+    v.togglePin(n);
+    await v.flush();
+    v.setBody(n, "new title\nbody");
+    await v.flush(); // e.g. the window closing right after typing
+    const meta = JSON.parse(be.files.get(".monkeynotes.json")!.body);
+    expect(meta.pinned).toEqual(["new title.md"]);
+  });
+});
+
+describe("folder rename failures", () => {
+  it("tells the app so it can point the view back at the old name", async () => {
+    const { be, v } = await open({ "projects/plan.md": "plan" });
+    be.dirs.add("work");
+    const reverted: [string, string][] = [];
+    v.onError = () => {};
+    v.onFolderRenameReverted = (from, to) => reverted.push([from, to]);
+    v.renameFolder("projects", "work");
+    await v.flush();
+    expect(reverted).toEqual([["projects", "work"]]);
+  });
+});

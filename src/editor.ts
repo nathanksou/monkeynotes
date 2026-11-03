@@ -155,9 +155,10 @@ export class Editor {
       this.mirrored = value;
     }
     const { index, offset } = locate(this.paras, pos);
-    // The paragraph that held the marker last time goes back to plain text (a
-    // stray zero-width marker could change where its lines wrap).
-    if (this.marked !== -1 && this.marked !== index) mirror.invalidate(this.marked);
+    // The paragraph that held the marker last time goes back to plain text: a
+    // stray zero-width marker could change where its lines wrap. Always, since
+    // the paragraphs around it may have shifted even if the caret's index didn't.
+    if (this.marked !== -1) mirror.invalidate(this.marked);
     mirror.update(this.paras);
 
     // Put the marker at the caret, inside its paragraph only.
