@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#323437" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <title>monkeynotes</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="folders" class="pane">
+        <header class="pane-head">
+          <span class="brand"><span class="accent">monkey</span>notes</span>
+        </header>
+        <ul id="folder-list" class="list"></ul>
+        <div class="pane-foot">
+          <button id="new-folder" class="ghost" title="new folder (ctrl+shift+n)">+ new folder</button>
+        </div>
+      </aside>
+
+      <section id="notes" class="pane">
+        <header class="pane-head">
+          <span id="notes-title"></span>
+          <button id="new-note" class="icon" title="new note (ctrl+n)">+</button>
+        </header>
+        <div class="search-wrap">
+          <input id="search" type="text" placeholder="search" spellcheck="false" autocomplete="off" />
+        </div>
+        <ul id="note-list" class="list"></ul>
+      </section>
+
+      <main id="main">
+        <div id="topbar">
+          <div id="stats"><span id="wpm" class="idle"></span></div>
+          <button id="open-palette" class="ghost" title="command line (esc)">esc</button>
+        </div>
+        <div id="scroller">
+          <div id="page">
+            <div id="wrap">
+              <textarea id="editor" class="text" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="note"></textarea>
+              <div class="mirror text" aria-hidden="true"></div>
+              <div class="caret hidden smooth"></div>
+            </div>
+            <div class="empty-hint">no note selected · <kbd>ctrl</kbd> + <kbd>n</kbd> to start one</div>
+          </div>
+        </div>
+        <footer id="footer">
+          <span id="note-meta"></span>
+          <span class="keys">
+            <kbd>esc</kbd> command line
+            <kbd>ctrl</kbd> + <kbd>n</kbd> new note
+            <kbd>ctrl</kbd> + <kbd>\</kbd> zen
+          </span>
+        </footer>
+      </main>
+    </div>
+
+    <div id="palette" hidden>
+      <div class="palette-box">
+        <input type="text" spellcheck="false" autocomplete="off" />
+        <ul class="palette-list"></ul>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

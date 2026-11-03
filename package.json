@@ -1,0 +1,26 @@
+{
+  "name": "monkeynotes",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A minimal, distraction-free desktop notes app with a typing-test aesthetic.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build"
+  },
+  "dependencies": {
+    "@fontsource/roboto-mono": "^5.3.0",
+    "@tauri-apps/api": "^2.12.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5"
+  }
+}
