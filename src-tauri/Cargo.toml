@@ -3,7 +3,7 @@ name = "monkeynotes"
 version = "0.1.0"
 description = "A minimal, distraction-free notes app with a typing-test aesthetic."
 authors = ["Nathan Sou"]
-license = "MIT"
+license = "GPL-3.0-only"
 edition = "2021"
 
 [lib]

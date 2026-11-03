@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "A minimal, distraction-free desktop notes app with a typing-test aesthetic.",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",

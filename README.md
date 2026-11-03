@@ -81,8 +81,10 @@ Push a tag such as `v0.1.0`. The `release` workflow then builds macOS (Apple Sil
 
 ## credits
 
-monkeynotes takes its visual inspiration from [Monkeytype](https://github.com/monkeytypegame/monkeytype), the open-source typing test. It contains no Monkeytype code and is not affiliated with Monkeytype. The font is [Roboto Mono](https://fonts.google.com/specimen/Roboto+Mono), licensed under Apache 2.0.
+monkeynotes takes its visual inspiration from [Monkeytype](https://github.com/monkeytypegame/monkeytype), the open-source typing test, and shares its license. It is not affiliated with Monkeytype. The font is [Roboto Mono](https://fonts.google.com/specimen/Roboto+Mono), licensed under Apache 2.0.
 
 ## license
 
-[MIT](LICENSE)
+Copyright (C) 2026 Nathan Sou
+
+monkeynotes is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License, version 3](LICENSE). If you distribute a modified version, you must release its source under the same license.
