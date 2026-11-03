@@ -87,4 +87,4 @@ monkeynotes takes its visual inspiration from [Monkeytype](https://github.com/mo
 
 Copyright (C) 2026 Nathan Sou
 
-monkeynotes is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License, version 3](LICENSE). If you distribute a modified version, you must release its source under the same license.
+monkeynotes is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License](LICENSE), either version 3 or (at your option) any later version. If you distribute a modified version, you must release its source under the same license.
