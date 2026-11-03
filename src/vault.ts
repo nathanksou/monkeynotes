@@ -33,12 +33,18 @@ const stemOf = (path: string) => baseOf(path).replace(/\.[^.]+$/, "");
 const extOf = (path: string) => (/\.[^./]+$/.exec(path)?.[0] ?? ".md");
 const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
+/** Root first, then depth-first alphabetical, so children follow their parent. */
+export function sortFolders(folders: Folder[]): Folder[] {
+  const key = (id: string) => id.toLowerCase().split("/").join("\u0001");
+  return [...folders].sort((a, b) => (a.id === ROOT ? -1 : b.id === ROOT ? 1 : key(a.id) < key(b.id) ? -1 : 1));
+}
+
 export class Vault {
   folders: Folder[] = [];
   notes: Note[] = [];
   private queue: Promise<unknown> = Promise.resolve();
   private dirty = new Set<Note>();
-  private timer = 0;
+  private timer: ReturnType<typeof setTimeout> | undefined;
   private lastMeta = "";
   /** Title notes by file name instead of first line (see setTitleFromFile). */
   titleFromFile = false;
@@ -145,7 +151,7 @@ export class Vault {
   }
 
   private foldersFrom(scan: Scan): Folder[] {
-    return [{ id: ROOT, name: "notes" }, ...scan.dirs.map((d) => ({ id: d, name: d }))];
+    return sortFolders([{ id: ROOT, name: "notes" }, ...scan.dirs.map((d) => ({ id: d, name: baseOf(d) }))]);
   }
 
   private parseMeta(raw: string | null): Meta {
@@ -175,7 +181,7 @@ export class Vault {
 
   private schedule(): void {
     clearTimeout(this.timer);
-    this.timer = window.setTimeout(() => void this.flush(), 400);
+    this.timer = setTimeout(() => void this.flush(), 400);
   }
 
   // ---------------------------------------------------------------- naming
@@ -313,54 +319,63 @@ export class Vault {
 
   // ---------------------------------------------------------------- folders
 
-  private uniqueFolder(name: string, self?: string): string {
+  /** Ids of a folder and everything inside it. */
+  private subtree(id: string): string[] {
+    return this.folders.filter((f) => f.id === id || f.id.startsWith(id + "/")).map((f) => f.id);
+  }
+
+  private uniqueFolder(parent: string, name: string, self?: string): string {
     const taken = new Set(this.folders.filter((f) => f.id !== self).map((f) => f.id.toLowerCase()));
     for (let i = 1; ; i++) {
-      const id = `${name}${i > 1 ? ` ${i}` : ""}`;
+      const id = join(parent, `${name}${i > 1 ? ` ${i}` : ""}`);
       if (!taken.has(id.toLowerCase()) && id !== TRASH_DIR) return id;
     }
   }
 
-  createFolder(name: string): Folder {
-    const id = this.uniqueFolder(safeName(name, "folder"));
-    const f = { id, name: id };
-    this.folders.push(f);
-    this.folders.sort((a, b) => (a.id === ROOT ? -1 : b.id === ROOT ? 1 : a.name.localeCompare(b.name)));
+  createFolder(name: string, parent: string = ROOT): Folder {
+    const id = this.uniqueFolder(parent, safeName(name, "folder"));
+    const f = { id, name: baseOf(id) };
+    this.folders = sortFolders([...this.folders, f]);
     this.run("create folder", () => this.be.mkdir(this.root, id));
     return f;
   }
 
+  /** Rename a folder in place; its notes and subfolders move with it. Returns the new id. */
   renameFolder(id: string, name: string): string {
-    const f = this.folders.find((x) => x.id === id);
-    if (!f || id === ROOT) return id;
-    const next = this.uniqueFolder(safeName(name, "folder"), id);
+    if (id === ROOT || !this.folders.some((f) => f.id === id)) return id;
+    const next = this.uniqueFolder(dirOf(id), safeName(name, "folder"), id);
     if (next === id) return id;
-    f.id = f.name = next;
+    const swap = (x: string) => (x === id ? next : x.startsWith(id + "/") ? next + x.slice(id.length) : x);
+    this.folders = sortFolders(this.folders.map((f) => ({ id: swap(f.id), name: baseOf(swap(f.id)) })));
     for (const n of this.notes) {
-      if (n.folderId !== id) continue;
-      n.folderId = next;
-      if (!n.deletedAt && n.path) n.path = join(next, baseOf(n.path));
+      n.folderId = swap(n.folderId);
+      if (!n.deletedAt && n.path) n.path = swap(n.path);
     }
     this.run("rename folder", () => this.be.rename(this.root, id, next));
-    this.schedule(); // trash metadata may point at the old name
+    this.schedule(); // pins and trash metadata point at the old paths
     return next;
   }
 
-  /** Moves the folder's notes to recently deleted, then removes the folder if it is empty. */
+  /** Moves the folder's notes (and its subfolders' notes) to recently deleted, then removes the empty folders. */
   deleteFolder(id: string): void {
     if (id === ROOT) return;
-    for (const n of this.notes.filter((x) => x.folderId === id)) {
+    const ids = this.subtree(id);
+    for (const n of this.notes.filter((x) => ids.includes(x.folderId))) {
       if (!n.deletedAt) this.trash(n);
       n.folderId = ROOT;
     }
-    this.folders = this.folders.filter((f) => f.id !== id);
-    void this.flush().then(() =>
-      this.run("remove folder", () =>
-        this.be.rmdir(this.root, id).catch(() => {
-          /* folder still holds non-note files; leave it */
-        }),
-      ),
-    );
+    this.folders = this.folders.filter((f) => !ids.includes(f.id));
+    // deepest first, so parents are empty by the time we reach them
+    const order = [...ids].sort((a, b) => b.split("/").length - a.split("/").length);
+    void this.flush().then(() => {
+      for (const dir of order) {
+        this.run("remove folder", () =>
+          this.be.rmdir(this.root, dir).catch(() => {
+            /* folder still holds non-note files; leave it */
+          }),
+        );
+      }
+    });
   }
 
   // ---------------------------------------------------------------- import
@@ -369,13 +384,11 @@ export class Vault {
     return files.map((f) => this.create(folderId, f.body, f.name));
   }
 
-  importDir(dir: ExtDir): { folder: Folder; count: number } {
-    const folder = this.createFolder(dir.name || "imported");
+  /** Import a folder tree as a new folder inside `parent`. */
+  importDir(dir: ExtDir, parent: string = ROOT): { folder: Folder; count: number } {
+    const folder = this.createFolder(dir.name || "imported", parent);
     let count = this.importFiles(folder.id, dir.files).length;
-    for (const sub of dir.dirs) {
-      const f = this.createFolder(sub.name);
-      count += this.importFiles(f.id, sub.files).length;
-    }
+    for (const sub of dir.dirs) count += this.importDir(sub, folder.id).count;
     return { folder, count };
   }
 }

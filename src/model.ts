@@ -25,6 +25,21 @@ export interface Note {
 export type FontFamily = "roboto mono" | "system mono" | "sans";
 export type LineWidth = "narrow" | "normal" | "wide";
 export type TitleSource = "first line" | "file name";
+export type SoundKind = "off" | "click" | "pop" | "thock" | "typewriter";
+export type TypingAnimation = "off" | "ghost" | "sparks" | "pulse";
+
+export interface DayStats {
+  /** characters typed (deletions don't count); words = chars / 5 */
+  chars: number;
+  /** active typing time in ms (gaps over a few seconds don't count) */
+  ms: number;
+  /** best sustained session wpm that day */
+  best: number;
+}
+
+export interface StatsData {
+  days: Record<string, DayStats>;
+}
 
 export interface Settings {
   theme: string;
@@ -32,7 +47,12 @@ export interface Settings {
   fontFamily: FontFamily;
   lineWidth: LineWidth;
   smoothCaret: boolean;
+  /** typing stats bar (live wpm, today, streak, average) */
   liveStats: boolean;
+  sound: SoundKind;
+  soundVolume: number;
+  typingAnimation: TypingAnimation;
+  checkUpdates: boolean;
   focusMode: boolean;
   spellcheck: boolean;
   zen: boolean;
@@ -45,7 +65,9 @@ export interface AppState {
   notesDir: string | null;
   settings: Settings;
   /** UI state restored on launch. */
-  view: { folderId: string; notePath: string | null };
+  view: { folderId: string; notePath: string | null; collapsed: string[] };
+  stats: StatsData;
+  lastUpdateCheck: number;
 }
 
 export const ALL = "__all__";
@@ -66,6 +88,10 @@ export const defaultSettings: Settings = {
   spellcheck: false,
   zen: false,
   titleSource: "first line",
+  sound: "off",
+  soundVolume: 0.5,
+  typingAnimation: "off",
+  checkUpdates: true,
 };
 
 export const WELCOME = `welcome to monkeynotes
@@ -81,6 +107,7 @@ alt+up / down     previous / next note
 ctrl+= / ctrl+-   font size
 
 ctrl+f            find in this note
+ctrl+enter        follow the [[link]] under the caret (or ctrl+click it)
 
 drag notes onto folders to move them. right-click a note or folder for more.
 
@@ -98,7 +125,9 @@ export function normalizeState(raw: unknown): AppState {
     version: 2,
     notesDir: typeof st.notesDir === "string" ? st.notesDir : null,
     settings: { ...defaultSettings, ...(st.settings ?? {}) },
-    view: { folderId: ALL, notePath: null, ...(st.view ?? {}) },
+    view: { folderId: ALL, notePath: null, collapsed: [], ...(st.view ?? {}) },
+    stats: st.stats && typeof st.stats === "object" && st.stats.days ? st.stats : { days: {} },
+    lastUpdateCheck: typeof st.lastUpdateCheck === "number" ? st.lastUpdateCheck : 0,
   };
 }
 

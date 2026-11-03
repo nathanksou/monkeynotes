@@ -8,15 +8,18 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 
 ## features
 
-- **folders and notes**: all notes, your folders, and recently deleted. The first line of a note is its title, and the list is sorted by last edit, with pinned notes on top.
-- **typing-test feel**: Roboto Mono, a custom smooth caret, live wpm, and focus mode that fades the UI while you type and brings it back when you move the mouse.
+- **folders and notes**: all notes, your folders (nested as deep as you like, collapsible), and recently deleted. The first line of a note is its title, and the list is sorted by last edit, with pinned notes on top.
+- **typing-test feel**: Roboto Mono, a custom smooth caret, and focus mode that fades the UI while you type and brings it back when you move the mouse.
+- **typing stats**: a stats bar under the editor shows live wpm, words and time typed today, your 30-day average and your daily streak. It stays visible while you type. Click it for a full stats view with a 14-day chart.
+- **typing sounds and animations** (off by default): click, pop, thock or typewriter sounds, synthesized on the fly; letters that float away, sparks, or a caret pulse.
+- **`[[links]]`**: Obsidian-style links are underlined. `ctrl+click` one or press `ctrl+enter` on it to open the note, or create it if it doesn't exist yet.
 - **zen mode** (`ctrl+\`): hide the sidebars and just write.
 - **command line** (`esc` or `ctrl+k`): every action and setting is a few keystrokes away, including themes with live preview.
 - **189 themes**: Monkeytype's whole collection plus a couple of originals, with live preview, and `random theme` when you can't decide.
 - **plain markdown files**: every note is a `.md` file in a folder you choose, so you can sync it with iCloud, Dropbox or git, or open it in any other editor.
 - **find in note** (`ctrl+f`): every match is highlighted; `enter` and `shift+enter` step through them.
 - **import / export**: bring in `.md` / `.txt` files or a whole folder, and export a single note or everything.
-- **local only**: no accounts, no sync service, no telemetry.
+- **local only**: no accounts, no sync service, no telemetry. The only network request is an optional once-a-day check of this repo's public releases, so the app can tell you when there's a new version. Turn it off with `check for updates on launch`.
 - **tiny**: built with [Tauri](https://tauri.app), so installers are a few MB instead of 100+.
 
 ## keyboard
@@ -28,6 +31,7 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 | `ctrl+shift+n` | new folder |
 | `ctrl+p` | jump to note |
 | `ctrl+f` | find in note |
+| `ctrl+enter` / `ctrl+click` | follow the `[[link]]` under the caret |
 | `ctrl+shift+f` | search all notes |
 | `ctrl+\` | zen mode |
 | `alt+↑` / `alt+↓` | previous / next note |
@@ -54,7 +58,7 @@ monkeynotes/
 
 ### using an obsidian vault
 
-You can point monkeynotes at an [Obsidian](https://obsidian.md) vault with `change notes folder`. Set `note titles` to `file name` so titles match Obsidian's and files are never renamed, which keeps `[[links]]` working. Notes in Obsidian's `.trash` show up under recently deleted but are never deleted automatically. Only top-level folders are shown.
+You can point monkeynotes at an [Obsidian](https://obsidian.md) vault with `change notes folder`. Set `note titles` to `file name` so titles match Obsidian's and files are never renamed, which keeps `[[links]]` working. Notes in Obsidian's `.trash` show up under recently deleted but are never deleted automatically. Hidden folders such as `.obsidian` are ignored.
 
 App settings (theme, font and so on) are stored separately in the app's data folder (`~/Library/Application Support/com.nathansou.monkeynotes` on macOS, `%APPDATA%\com.nathansou.monkeynotes` on Windows, `~/.local/share/com.nathansou.monkeynotes` on Linux). Notes from v0.1 are moved into the notes folder automatically on first launch.
 
@@ -68,6 +72,8 @@ npm run app:dev     # run the desktop app with hot reload
 npm run app:build   # build an installer for your OS (output: src-tauri/target/release/bundle)
 ```
 
+`npm test` runs the unit tests (file naming, folders, trash, links, stats), and `cargo test` in `src-tauri` runs the Rust ones.
+
 `npm run dev` runs just the UI in a browser at http://localhost:1420. In the browser, notes are kept in a small fake file system in localStorage, which is handy for quick UI work.
 
 ### layout
@@ -79,11 +85,17 @@ src/
   backend.ts            disk access: Tauri commands, or localStorage in the browser
   editor.ts             textarea with the custom smooth caret
   find.ts               find in note
+  stats.ts              typing stats (wpm, streaks, daily totals)
+  sound.ts              synthesized key sounds
+  effects.ts            typing animations
+  links.ts              [[link]] parsing
+  updates.ts            new-release check
   palette.ts            command line (menus, previews, prompts)
   model.ts              data types, defaults, helpers
   themes.ts             theme list
   themes-monkeytype.ts  Monkeytype's palettes (generated)
   styles.css
+tests/                  vitest unit tests
 src-tauri/
   src/lib.rs            file-system commands (scan, atomic write, rename, import/export)
 ```
@@ -97,6 +109,7 @@ Push a tag such as `v0.1.0`. The `release` workflow then builds macOS (Apple Sil
 - find and replace
 - custom themes
 - markdown preview
+- `[[link]]` autocomplete
 
 ## credits
 

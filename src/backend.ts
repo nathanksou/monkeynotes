@@ -180,10 +180,12 @@ class BrowserBackend implements Backend {
   }
   async rename(_root: string, from: string, to: string) {
     if (this.dirs.includes(from)) {
-      this.dirs = this.dirs.map((d) => (d === from ? to : d));
+      const swap = (p: string) => (p === from ? to : p.startsWith(from + "/") ? to + p.slice(from.length) : p);
+      this.dirs = this.dirs.map(swap);
       for (const p of Object.keys(this.files)) {
-        if (p.startsWith(from + "/")) {
-          this.files[to + p.slice(from.length)] = this.files[p];
+        const next = swap(p);
+        if (next !== p) {
+          this.files[next] = this.files[p];
           delete this.files[p];
         }
       }
@@ -199,11 +201,17 @@ class BrowserBackend implements Backend {
     this.persist();
   }
   async mkdir(_root: string, path: string) {
-    if (!path.startsWith(".") && !this.dirs.includes(path)) this.dirs.push(path);
+    if (path.startsWith(".")) return;
+    const parts = path.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const dir = parts.slice(0, i).join("/");
+      if (!this.dirs.includes(dir)) this.dirs.push(dir);
+    }
     this.persist();
   }
   async rmdir(_root: string, path: string) {
-    if (Object.keys(this.files).some((p) => p.startsWith(path + "/"))) throw new Error("folder not empty");
+    const inside = (p: string) => p.startsWith(path + "/");
+    if (Object.keys(this.files).some(inside) || this.dirs.some(inside)) throw new Error("folder not empty");
     this.dirs = this.dirs.filter((d) => d !== path);
     this.persist();
   }

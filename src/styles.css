@@ -180,7 +180,9 @@ kbd {
 /* folders */
 
 .folder {
+  --depth: 0;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0.45rem 0.6rem;
@@ -193,7 +195,21 @@ kbd {
     background var(--speed);
 }
 
+.folder .twisty {
+  flex: none;
+  width: calc(0.9rem + var(--depth) * 0.9rem);
+  padding-left: calc(var(--depth) * 0.9rem);
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+.folder .twisty[data-toggle]:hover {
+  opacity: 1;
+  color: var(--main);
+}
+
 .folder .name {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -217,9 +233,8 @@ kbd {
   outline: 1px dashed var(--main);
 }
 
-.folder.smart .name::before {
-  content: "~ ";
-  opacity: 0.6;
+.folder.smart .twisty::before {
+  content: "~";
 }
 
 .count {
@@ -326,48 +341,11 @@ kbd {
   flex: none;
 }
 
-#stats {
-  max-width: min(var(--line-width), 100%);
-  height: 100%;
-  margin: 0 auto;
-  padding: 0 2rem;
-}
-
 #open-palette {
   position: absolute;
   top: 50%;
   right: 1.5rem;
   transform: translateY(-50%);
-}
-
-#stats {
-  display: flex;
-  align-items: center;
-  font-variant-numeric: tabular-nums;
-}
-
-#wpm {
-  color: var(--main);
-  font-size: 1.6rem;
-  min-width: 2ch;
-  transition: opacity 400ms;
-}
-
-#wpm::after {
-  content: " wpm";
-  font-size: 0.85rem;
-}
-
-#wpm:empty::after {
-  content: "";
-}
-
-#wpm.idle {
-  opacity: 0;
-}
-
-#app.no-stats #wpm {
-  display: none;
 }
 
 #scroller {
@@ -502,13 +480,6 @@ kbd {
   text-overflow: ellipsis;
 }
 
-.keys kbd {
-  margin-left: 0.6rem;
-}
-
-.keys kbd + kbd {
-  margin-left: 0;
-}
 
 /* focus mode: chrome fades away while you type, comes back on mouse move */
 
@@ -727,4 +698,241 @@ kbd {
 
 #toast[hidden] {
   display: none;
+}
+
+/* ------------------------------------------------------------ stats bar */
+
+#footer {
+  display: flex;
+  justify-content: space-between;
+}
+
+#statsbar {
+  display: flex;
+  gap: 1.1rem;
+  flex: none;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+#statsbar b {
+  color: var(--text);
+  font-weight: 400;
+}
+
+#statsbar .stat.live b {
+  color: var(--main);
+}
+
+#statsbar .stat.idle b {
+  color: var(--sub);
+}
+
+#app.no-stats #statsbar {
+  display: none;
+}
+
+/* the stats bar stays visible in focus mode so you can watch it while typing */
+#app.typing #footer {
+  opacity: 1;
+}
+
+#app.typing #note-meta {
+  opacity: 0;
+  transition: opacity 300ms;
+}
+
+@media (max-width: 1000px) {
+  #statsbar .stat:nth-child(n + 4) {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------ stats view */
+
+#stats-view {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: color-mix(in srgb, #000 55%, transparent);
+  animation: fade-in 100ms ease-out;
+}
+
+#stats-view[hidden] {
+  display: none;
+}
+
+.stats-box {
+  width: min(760px, 100%);
+  background: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: 0 0 0 1px var(--sub-alt);
+  padding: 1.75rem 2rem;
+}
+
+.stats-box h2 {
+  margin: 0 0 1.25rem;
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--sub);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.25rem 1rem;
+}
+
+.stats-grid .label {
+  color: var(--sub);
+  font-size: 0.75rem;
+}
+
+.stats-grid .big {
+  color: var(--main);
+  font-size: 2rem;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.4rem;
+  height: 120px;
+  margin-top: 1.75rem;
+}
+
+.stats-chart .col {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.stats-chart .bar {
+  width: 100%;
+  min-height: 2px;
+  border-radius: 0.25rem 0.25rem 0 0;
+  background: var(--sub-alt);
+}
+
+.stats-chart .col.today .bar {
+  background: var(--main);
+}
+
+.stats-chart .day {
+  color: var(--sub);
+  font-size: 0.7rem;
+}
+
+.stats-foot {
+  margin-top: 1.25rem;
+  color: var(--sub);
+  font-size: 0.7rem;
+}
+
+@media (max-width: 640px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ------------------------------------------------------------ links */
+
+#decor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: transparent;
+  pointer-events: none;
+}
+
+#decor .link {
+  text-decoration: underline;
+  text-decoration-color: var(--main);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.2em;
+}
+
+/* ------------------------------------------------------------ typing animations */
+
+#fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.fx-ghost {
+  position: absolute;
+  font-family: var(--font);
+  font-size: var(--font-size);
+  color: var(--main);
+  white-space: pre;
+  animation: fx-ghost 550ms ease-out forwards;
+}
+
+@keyframes fx-ghost {
+  from {
+    opacity: 0.9;
+    transform: translate(-100%, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-100%, -1.1em) scale(1.35);
+  }
+}
+
+.fx-spark {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: var(--main);
+  animation: fx-spark 420ms ease-out forwards;
+}
+
+@keyframes fx-spark {
+  from {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy)) scale(0.3);
+  }
+}
+
+.caret.bump::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 99px;
+  background: var(--caret);
+  opacity: 0.6;
+  animation: caret-bump 260ms ease-out forwards;
+}
+
+@keyframes caret-bump {
+  from {
+    opacity: 0.6;
+    transform: scaleX(3) scaleY(1.15);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+#toast.clickable {
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--main);
 }

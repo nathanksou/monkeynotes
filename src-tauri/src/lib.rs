@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! <root>/                    the default "notes" folder
-//! <root>/<folder>/*.md       one level of folders
+//! <root>/<folder>/.../*.md  folders, nested up to 8 deep
 //! <root>/.trash/*.md         recently deleted
 //! <root>/.monkeynotes.json   pins + trash metadata
 //! ```
@@ -163,7 +163,28 @@ fn read_notes(root: &Path, rel_dir: &str, out: &mut Vec<FileEntry>) -> Res<()> {
     Ok(())
 }
 
-/// Read every note in the root, its folders and the trash.
+/// How deep folders are scanned and imported.
+const MAX_DEPTH: u8 = 8;
+
+/// Collect `rel_dir`'s subfolders (any depth) and their notes.
+fn scan_dirs(root: &Path, rel_dir: &str, depth: u8, dirs: &mut Vec<String>, files: &mut Vec<FileEntry>) -> Res<()> {
+    let dir = if rel_dir.is_empty() { root.to_path_buf() } else { root.join(rel_dir) };
+    for entry in fs::read_dir(&dir).map_err(err)?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_hidden(&name) || !entry.path().is_dir() {
+            continue;
+        }
+        let rel = if rel_dir.is_empty() { name } else { format!("{rel_dir}/{name}") };
+        read_notes(root, &rel, files)?;
+        if depth > 1 {
+            scan_dirs(root, &rel, depth - 1, dirs, files)?;
+        }
+        dirs.push(rel);
+    }
+    Ok(())
+}
+
+/// Read every note in the root, its folders (nested) and the trash.
 #[tauri::command]
 fn scan(root: String) -> Res<Scan> {
     let root_path = PathBuf::from(&root);
@@ -171,14 +192,7 @@ fn scan(root: String) -> Res<Scan> {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     read_notes(&root_path, "", &mut files)?;
-    for entry in fs::read_dir(&root_path).map_err(err)?.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if is_hidden(&name) || !entry.path().is_dir() {
-            continue;
-        }
-        read_notes(&root_path, &name, &mut files)?;
-        dirs.push(name);
-    }
+    scan_dirs(&root_path, "", MAX_DEPTH, &mut dirs, &mut files)?;
     read_notes(&root_path, TRASH_DIR, &mut files)?;
     dirs.sort_by_key(|d| d.to_lowercase());
     let meta = read_opt(&root_path.join(META_FILE))?;
@@ -282,10 +296,10 @@ fn read_ext_dir(path: &Path, depth: u8) -> Res<ExtDir> {
     Ok(ExtDir { name, files, dirs })
 }
 
-/// Read a folder the user picked to import: its notes plus one level of subfolders.
+/// Read a folder the user picked to import, including its subfolders.
 #[tauri::command]
 fn read_external_dir(path: String) -> Res<ExtDir> {
-    read_ext_dir(Path::new(&path), 1)
+    read_ext_dir(Path::new(&path), MAX_DEPTH)
 }
 
 /// Write a file to a location the user picked in a save / folder dialog.
@@ -294,10 +308,49 @@ fn write_external(path: String, contents: String) -> Res<()> {
     write_atomic(Path::new(&path), &contents)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_accepts_plain_relative_paths() {
+        assert!(resolve("/notes", "a.md").is_ok());
+        assert!(resolve("/notes", "ideas/sub/a.md").is_ok());
+        assert!(resolve("/notes", ".trash/a.md").is_ok());
+    }
+
+    #[test]
+    fn resolve_rejects_escapes() {
+        for bad in ["", "..", "../a.md", "ideas/../../a.md", "/etc/passwd", "./a.md"] {
+            assert!(resolve("/notes", bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn scan_reads_nested_folders_and_skips_hidden() {
+        let root = std::env::temp_dir().join(format!("monkeynotes-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join("top.md"), "top").unwrap();
+        fs::write(root.join("a/b/deep.md"), "deep").unwrap();
+        fs::write(root.join(".obsidian/app.md"), "hidden").unwrap();
+        fs::write(root.join("a/image.png"), "not a note").unwrap();
+
+        let scan = scan(root.display().to_string()).unwrap();
+        let mut paths: Vec<_> = scan.files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["a/b/deep.md", "top.md"]);
+        assert_eq!(scan.dirs, ["a", "a/b"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             load_state,
             save_state,

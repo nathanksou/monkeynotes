@@ -4,7 +4,9 @@ import "./styles.css";
 
 import { backend } from "./backend";
 import { Editor } from "./editor";
+import { spawnEffect } from "./effects";
 import { Find } from "./find";
+import { linkAt, linkRanges } from "./links";
 import {
   ALL,
   type AppState,
@@ -13,6 +15,8 @@ import {
   type Note,
   ROOT,
   type Settings,
+  type SoundKind,
+  type TypingAnimation,
   TRASH,
   type TitleSource,
   WELCOME,
@@ -25,7 +29,10 @@ import {
   wordCount,
 } from "./model";
 import { type Command, type Menu, Palette } from "./palette";
+import { type KeyType, playKey } from "./sound";
+import { TypingStats, dayKey, formatDuration } from "./stats";
 import { applyTheme, findTheme, themes } from "./themes";
+import { VERSION, checkForUpdate } from "./updates";
 import { Vault, safeName } from "./vault";
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -38,7 +45,10 @@ const els = {
   search: $<HTMLInputElement>("#search"),
   scroller: $("#scroller"),
   page: $("#page"),
-  wpm: $("#wpm"),
+  statsBar: $("#statsbar"),
+  statsView: $("#stats-view"),
+  decor: $("#decor"),
+  fx: $("#fx"),
   meta: $("#note-meta"),
   toast: $("#toast"),
 };
@@ -49,6 +59,7 @@ let editor: Editor;
 let palette: Palette;
 let find: Find;
 let currentId: string | null = null;
+let stats: TypingStats;
 
 // ---------------------------------------------------------------- state helpers
 
@@ -58,6 +69,12 @@ const view = () => state.view;
 const isRealFolder = (id: string) => vault.folders.some((f) => f.id === id);
 const folderName = (id: string) =>
   id === ALL ? "all notes" : id === TRASH ? "recently deleted" : (vault.folders.find((f) => f.id === id)?.name ?? "notes");
+/** "projects / 2026" for nested folders. */
+const folderPath = (id: string) => (id === ROOT || id === ALL || id === TRASH ? folderName(id) : id.split("/").join(" / "));
+const depthOf = (id: string) => (id === ROOT || id === ALL || id === TRASH ? 0 : id.split("/").length - 1);
+const hasChildren = (id: string) => id !== ROOT && vault.folders.some((f) => f.id.startsWith(id + "/"));
+/** Hidden because a parent folder is collapsed. */
+const isTucked = (id: string) => view().collapsed.some((c) => id.startsWith(c + "/"));
 /** Where new and imported notes go from the current view. */
 const targetFolder = () => (isRealFolder(view().folderId) ? view().folderId : ROOT);
 
@@ -73,11 +90,14 @@ function writeState(): Promise<void> {
 }
 
 let toastTimer = 0;
-function toast(msg: string): void {
+let toastAction: (() => void) | null = null;
+function toast(msg: string, action?: () => void, ms = 4000): void {
   els.toast.textContent = msg;
   els.toast.hidden = false;
+  els.toast.classList.toggle("clickable", !!action);
+  toastAction = action ?? null;
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => (els.toast.hidden = true), 4000);
+  toastTimer = window.setTimeout(() => (els.toast.hidden = true), ms);
 }
 
 function notesInView(): Note[] {
@@ -97,7 +117,9 @@ function renderFolders(): void {
   const trashed = vault.notes.length - live.length;
   const rows: { id: string; name: string; count: number }[] = [
     { id: ALL, name: "all notes", count: live.length },
-    ...vault.folders.map((f) => ({ id: f.id, name: f.name, count: live.filter((n) => n.folderId === f.id).length })),
+    ...vault.folders
+      .filter((f) => !isTucked(f.id))
+      .map((f) => ({ id: f.id, name: f.name, count: live.filter((n) => n.folderId === f.id).length })),
   ];
   if (trashed || view().folderId === TRASH) rows.push({ id: TRASH, name: "recently deleted", count: trashed });
 
@@ -108,6 +130,14 @@ function renderFolders(): void {
       li.className = "folder";
       if (r.id === view().folderId) li.classList.add("active");
       if (r.id === ALL || r.id === TRASH) li.classList.add("smart");
+      li.style.setProperty("--depth", String(depthOf(r.id)));
+      const twisty = document.createElement("span");
+      twisty.className = "twisty";
+      if (hasChildren(r.id)) {
+        twisty.textContent = view().collapsed.includes(r.id) ? "\u25b8" : "\u25be";
+        twisty.dataset.toggle = r.id;
+      }
+      li.append(twisty);
       const name = document.createElement("span");
       name.className = "name";
       name.textContent = r.name;
@@ -153,7 +183,7 @@ function renderNotes(): void {
       if (view().folderId === ALL) {
         const f = document.createElement("div");
         f.className = "folder-tag";
-        f.textContent = folderName(n.folderId);
+        f.textContent = folderPath(n.folderId);
         li.append(f);
       }
       return li;
@@ -167,7 +197,7 @@ function renderStats(): void {
   els.meta.textContent = n
     ? n.deletedAt
       ? "recently deleted · restore it from the command line"
-      : `${folderName(n.folderId)} · ${wordCount(n.body)} words · edited ${formatDate(n.updatedAt)}`
+      : `${folderPath(n.folderId)} · ${wordCount(n.body)} words · edited ${formatDate(n.updatedAt)}`
     : "";
 }
 
@@ -217,6 +247,8 @@ function openNote(id: string | null, opts: { focus?: boolean } = {}): void {
   currentId = id;
   const n = current();
   editor.load(n?.body ?? "", { readOnly: !n || !!n.deletedAt, caretAt: "end" });
+  els.fx.replaceChildren();
+  paintLinks();
   els.page.classList.toggle("empty", !n);
   resetLiveStats();
   renderNotes();
@@ -301,10 +333,22 @@ function setTitleMode(mode: TitleSource): void {
 
 // ---------------------------------------------------------------- folder actions
 
-async function newFolder(): Promise<void> {
-  const name = await palette.ask("folder name", "", focusEditor);
+async function newFolder(parent: string = ROOT): Promise<void> {
+  const name = await palette.ask(parent ? `new folder inside ${folderPath(parent)}` : "folder name", "", focusEditor);
   if (!name) return;
-  openFolder(vault.createFolder(name).id);
+  view().collapsed = view().collapsed.filter((c) => c !== parent);
+  openFolder(vault.createFolder(name, parent).id);
+}
+
+/** Swap a folder id prefix after a rename. */
+const swapPrefix = (x: string, from: string, to: string) =>
+  x === from ? to : x.startsWith(from + "/") ? to + x.slice(from.length) : x;
+
+function toggleCollapsed(id: string): void {
+  const c = view().collapsed;
+  view().collapsed = c.includes(id) ? c.filter((x) => x !== id) : [...c, id];
+  renderFolders();
+  saveState();
 }
 
 async function renameFolder(id: string): Promise<void> {
@@ -313,14 +357,16 @@ async function renameFolder(id: string): Promise<void> {
   const name = await palette.ask(`rename "${f.name}"`, f.name, focusEditor);
   if (!name) return;
   const next = vault.renameFolder(id, name);
-  if (view().folderId === id) view().folderId = next;
+  view().folderId = swapPrefix(view().folderId, id, next);
+  view().collapsed = view().collapsed.map((c) => swapPrefix(c, id, next));
   renderAll();
   saveState();
 }
 
 function deleteFolder(id: string): void {
   vault.deleteFolder(id);
-  if (view().folderId === id) openFolder(ALL);
+  view().collapsed = view().collapsed.filter((c) => c !== id && !c.startsWith(id + "/"));
+  if (view().folderId === id || view().folderId.startsWith(id + "/")) openFolder(ALL);
   else {
     if (current()?.deletedAt) openNote(notesInView()[0]?.id ?? null);
     renderAll();
@@ -430,40 +476,189 @@ function focusEditor(): void {
   if (current()) editor.focus();
 }
 
-// ---------------------------------------------------------------- live stats (wpm)
-
-const SESSION_GAP = 3000;
-let sessionStart = 0;
-let lastKey = 0;
-let sessionChars = 0;
+// ---------------------------------------------------------------- typing stats
 
 function resetLiveStats(): void {
-  sessionStart = lastKey = sessionChars = 0;
-  els.wpm.textContent = "";
   els.app.classList.remove("typing");
 }
 
 function onType(chars: number): void {
-  const now = performance.now();
-  if (now - lastKey > SESSION_GAP) {
-    sessionStart = now;
-    sessionChars = 0;
-  }
-  sessionChars += chars;
-  lastKey = now;
+  stats.type(chars);
   if (settings().focusMode) els.app.classList.add("typing");
+  saveState();
 }
 
-setInterval(() => {
-  const now = performance.now();
-  const elapsed = (lastKey - sessionStart) / 60000;
-  if (now - lastKey > SESSION_GAP || elapsed < 2 / 60) {
-    els.wpm.classList.add("idle");
-    return;
+/** The always-visible stats bar under the editor (it stays put in focus mode). */
+function renderStatsBar(): void {
+  if (!settings().liveStats) return;
+  const live = stats.live();
+  const today = stats.today();
+  const streak = stats.streak();
+  const parts: [string, string, string?][] = [
+    [String(live ?? stats.lastWpm), "wpm", live === null ? "idle" : "live"],
+    [String(Math.round(today.chars / 5)), "words today"],
+    [formatDuration(today.ms), "typing today"],
+    [String(stats.average()), "avg wpm"],
+  ];
+  if (streak) parts.push([String(streak), streak === 1 ? "day streak" : "day streak"]);
+  els.statsBar.replaceChildren(
+    ...parts.map(([value, label, cls]) => {
+      const item = document.createElement("span");
+      item.className = `stat ${cls ?? ""}`;
+      const v = document.createElement("b");
+      v.textContent = value;
+      item.append(v, ` ${label}`);
+      return item;
+    }),
+  );
+}
+setInterval(() => stats && renderStatsBar(), 250);
+
+function showStats(): void {
+  const t = stats.totals();
+  const today = stats.today();
+  const days = stats.recent(14);
+  const max = Math.max(1, ...days.map((d) => d.stats?.chars ?? 0));
+  const box = document.createElement("div");
+  box.className = "stats-box";
+  const h = document.createElement("h2");
+  h.textContent = "typing stats";
+  const grid = document.createElement("div");
+  grid.className = "stats-grid";
+  const cell = (value: string, label: string) => {
+    const c = document.createElement("div");
+    const v = document.createElement("div");
+    v.className = "big";
+    v.textContent = value;
+    const l = document.createElement("div");
+    l.className = "label";
+    l.textContent = label;
+    c.append(l, v);
+    return c;
+  };
+  grid.append(
+    cell(String(Math.round(today.chars / 5)), "words today"),
+    cell(formatDuration(today.ms), "typing today"),
+    cell(String(today.best || "-"), "best wpm today"),
+    cell(String(stats.streak()), "day streak"),
+    cell(String(stats.average()), "avg wpm (30 days)"),
+    cell(String(t.best || "-"), "best wpm ever"),
+    cell(t.words.toLocaleString(), "words all time"),
+    cell(formatDuration(t.ms), "typing all time"),
+  );
+  const chart = document.createElement("div");
+  chart.className = "stats-chart";
+  for (const d of days) {
+    const col = document.createElement("div");
+    col.className = "col";
+    if (d.key === dayKey()) col.classList.add("today");
+    const words = Math.round((d.stats?.chars ?? 0) / 5);
+    col.title = `${d.day.toLocaleDateString()} · ${words} words · ${formatDuration(d.stats?.ms ?? 0)}`;
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    bar.style.height = `${((d.stats?.chars ?? 0) / max) * 100}%`;
+    const lbl = document.createElement("div");
+    lbl.className = "day";
+    lbl.textContent = d.day.toLocaleDateString([], { weekday: "narrow" });
+    col.append(bar, lbl);
+    chart.append(col);
   }
-  els.wpm.classList.remove("idle");
-  els.wpm.textContent = String(Math.round(sessionChars / 5 / elapsed));
-}, 250);
+  const foot = document.createElement("div");
+  foot.className = "stats-foot";
+  foot.textContent = "words = characters / 5 · only active typing time counts · esc to close";
+  box.append(h, grid, chart, foot);
+  els.statsView.replaceChildren(box);
+  els.statsView.hidden = false;
+}
+
+function hideStats(): void {
+  els.statsView.hidden = true;
+  focusEditor();
+}
+
+// ---------------------------------------------------------------- links
+
+/** Open the note a [[link]] points at, creating it if it doesn't exist (like Obsidian). */
+function followLink(target: string): void {
+  const t = target.toLowerCase();
+  const stem = (p: string) => p.replace(/\.[^./]+$/, "").toLowerCase();
+  const live = vault.notes.filter((n) => !n.deletedAt);
+  let n =
+    live.find((x) => x.path && stem(x.path) === t) ??
+    live.find((x) => x.path && stem(x.path.slice(x.path.lastIndexOf("/") + 1)) === t) ??
+    live.find((x) => noteTitle(x).toLowerCase() === t);
+  if (!n) {
+    const from = current();
+    const folder = from && !from.deletedAt ? from.folderId : targetFolder();
+    const body = settings().titleSource === "file name" ? "" : `${target}\n`;
+    n = vault.create(folder, body, target.split("/").pop());
+    toast(`created "${target}"`);
+  }
+  if (view().folderId !== ALL && view().folderId !== n.folderId) {
+    view().folderId = ALL;
+    els.search.value = "";
+  }
+  renderFolders();
+  openNote(n.id);
+}
+
+function followLinkAtCaret(): boolean {
+  const target = linkAt(editor.ta.value, editor.ta.selectionStart);
+  if (target) followLink(target);
+  return !!target;
+}
+
+/** Underline [[links]] on a layer behind the text. */
+let decorTimer = 0;
+function paintLinks(): void {
+  clearTimeout(decorTimer);
+  decorTimer = window.setTimeout(() => {
+    const text = editor.ta.value;
+    const ranges = linkRanges(text);
+    if (!ranges.length) {
+      els.decor.replaceChildren();
+      return;
+    }
+    const parts: Node[] = [];
+    let last = 0;
+    for (const [a, b] of ranges) {
+      parts.push(document.createTextNode(text.slice(last, a)));
+      const u = document.createElement("span");
+      u.className = "link";
+      u.textContent = text.slice(a, b);
+      parts.push(u);
+      last = b;
+    }
+    parts.push(document.createTextNode(text.slice(last) + "\u200b"));
+    els.decor.replaceChildren(...parts);
+  }, 60);
+}
+
+// ---------------------------------------------------------------- updates
+
+async function openUrl(url: string): Promise<void> {
+  if (backend.desktop) {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+  } else {
+    window.open(url, "_blank", "noopener");
+  }
+}
+
+async function checkUpdates(manual: boolean): Promise<void> {
+  try {
+    const release = await checkForUpdate();
+    state.lastUpdateCheck = Date.now();
+    saveState();
+    if (release) {
+      toast(`monkeynotes ${release.version} is out (you have ${VERSION}). click to open the release page`, () => void openUrl(release.url), 12000);
+    } else if (manual) {
+      toast(`you're on the latest version (${VERSION})`);
+    }
+  } catch (e) {
+    if (manual) toast(`couldn't check for updates: ${e}`);
+  }
+}
 
 // ---------------------------------------------------------------- command line
 
@@ -506,13 +701,14 @@ function noteCommands(n: Note): Command[] {
   }
   return [
     { label: "find in note", hint: "ctrl+f", run: () => find.open() },
+    ...(linkAt(n.body, editor.ta.selectionStart) ? [{ label: "follow link", hint: "ctrl+enter", run: () => void followLinkAtCaret() }] : []),
     { label: n.pinned ? "unpin note" : "pin note", run: () => togglePin(n) },
     { label: "rename note", hint: "file name", run: () => void renameNote(n) },
     {
       label: "move note to",
       sub: () => ({
         title: "move to folder",
-        items: vault.folders.map((f) => ({ label: f.name, active: f.id === n.folderId, run: () => moveNote(n, f.id) })),
+        items: vault.folders.map((f) => ({ label: folderPath(f.id), active: f.id === n.folderId, run: () => moveNote(n, f.id) })),
       }),
     },
     { label: "export note", hint: ".md", run: () => void exportNote(n) },
@@ -525,8 +721,9 @@ function folderCommands(id: string): Command[] {
   if (id === TRASH) return [{ label: "empty recently deleted", run: emptyTrash }];
   const f = vault.folders.find((x) => x.id === id);
   if (!f || id === ROOT) return [];
-  const count = vault.notes.filter((n) => n.folderId === id && !n.deletedAt).length;
+  const count = vault.notes.filter((n) => (n.folderId === id || n.folderId.startsWith(id + "/")) && !n.deletedAt).length;
   return [
+    { label: `new folder inside "${f.name}"`, run: () => void newFolder(id) },
     { label: `rename folder "${f.name}"`, run: () => void renameFolder(id) },
     {
       label: `delete folder "${f.name}"`,
@@ -549,7 +746,7 @@ function jumpMenu(): Menu {
       .sort(sortNotes)
       .map((n) => ({
         label: noteTitle(n),
-        hint: folderName(n.folderId),
+        hint: folderPath(n.folderId),
         run: () => {
           if (view().folderId !== ALL && view().folderId !== n.folderId) {
             view().folderId = ALL;
@@ -582,7 +779,7 @@ function rootMenu(): Menu {
           { id: ALL, name: "all notes" },
           ...vault.folders,
           ...(vault.notes.some((x) => x.deletedAt) ? [{ id: TRASH, name: "recently deleted" }] : []),
-        ].map((f) => ({ label: f.name, active: f.id === view().folderId, run: () => openFolder(f.id) })),
+        ].map((f) => ({ label: folderPath(f.id), active: f.id === view().folderId, run: () => openFolder(f.id) })),
       }),
     },
     ...(n ? noteCommands(n) : []),
@@ -642,7 +839,51 @@ function rootMenu(): Menu {
         ),
     },
     { label: "smooth caret", sub: () => choice("smooth caret", onOff, () => s.smoothCaret, (v) => setSetting("smoothCaret", v)) },
-    { label: "live wpm", sub: () => choice("live wpm", onOff, () => s.liveStats, (v) => setSetting("liveStats", v)) },
+    { label: "show typing stats", run: showStats },
+    { label: "stats bar", hint: "wpm, today, streak", sub: () => choice("stats bar", onOff, () => s.liveStats, (v) => setSetting("liveStats", v)) },
+    {
+      label: "typing sounds",
+      sub: () => {
+        const menu = choice<SoundKind>(
+          "typing sounds",
+          (["off", "click", "pop", "thock", "typewriter"] as const).map((v) => ({ label: v, value: v })),
+          () => s.sound,
+          (v) => setSetting("sound", v),
+        );
+        // hear each sound as you arrow through the list
+        menu.items.forEach((item) => (item.preview = () => playKey(item.label as SoundKind, s.soundVolume, "char")));
+        return menu;
+      },
+    },
+    {
+      label: "sound volume",
+      sub: () =>
+        choice(
+          "sound volume",
+          [
+            { label: "quiet", value: 0.25 },
+            { label: "medium", value: 0.5 },
+            { label: "loud", value: 1 },
+          ],
+          () => s.soundVolume,
+          (v) => setSetting("soundVolume", v),
+        ),
+    },
+    {
+      label: "typing animation",
+      sub: () =>
+        choice<TypingAnimation>(
+          "typing animation",
+          [
+            { label: "off", value: "off" },
+            { label: "ghost (letters float away)", value: "ghost" },
+            { label: "sparks", value: "sparks" },
+            { label: "pulse (caret bumps)", value: "pulse" },
+          ],
+          () => s.typingAnimation,
+          (v) => setSetting("typingAnimation", v),
+        ),
+    },
     {
       label: "focus mode",
       hint: "hide ui while typing",
@@ -655,6 +896,11 @@ function rootMenu(): Menu {
           { label: "change notes folder", hint: vault.root, run: () => void pickNotesDir() },
           ...(state.notesDir ? [{ label: "use default notes folder", run: () => void changeNotesDir(null) }] : []),
           { label: "copy notes folder path", run: () => void navigator.clipboard.writeText(vault.root) },
+          { label: "check for updates", hint: `v${VERSION}`, run: () => void checkUpdates(true) },
+          {
+            label: "check for updates on launch",
+            sub: () => choice("check for updates on launch", onOff, () => s.checkUpdates, (v) => setSetting("checkUpdates", v)),
+          },
         ]
       : []),
   ];
@@ -673,6 +919,17 @@ function bindEvents(): void {
   document.addEventListener("keydown", (e) => {
     if (palette.isOpen) return;
     const k = e.key.toLowerCase();
+    if (!els.statsView.hidden) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        hideStats();
+      }
+      return;
+    }
+    if (mod(e) && e.key === "Enter") {
+      if (document.activeElement === editor.ta && followLinkAtCaret()) e.preventDefault();
+      return;
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       if (document.activeElement === els.search) {
@@ -727,6 +984,8 @@ function bindEvents(): void {
     (e.target as HTMLElement).closest<HTMLElement>("li[data-id]")?.dataset.id;
 
   els.folderList.addEventListener("click", (e) => {
+    const toggle = (e.target as HTMLElement).closest<HTMLElement>("[data-toggle]");
+    if (toggle) return toggleCollapsed(toggle.dataset.toggle!);
     const id = rowId(e, els.folderList);
     if (id !== undefined) openFolder(id);
   });
@@ -801,6 +1060,32 @@ function bindEvents(): void {
     editor.focus();
   });
 
+  // key sounds
+  editor.ta.addEventListener("keydown", (e) => {
+    const s = settings();
+    if (s.sound === "off" || e.ctrlKey || e.metaKey || editor.ta.readOnly) return;
+    let key: KeyType | null = null;
+    if (e.key === " ") key = "space";
+    else if (e.key === "Enter") key = "enter";
+    else if (e.key === "Backspace" || e.key === "Delete") key = "back";
+    else if (e.key.length === 1 || e.key === "Tab") key = "char";
+    if (key) playKey(s.sound, s.soundVolume, key);
+  });
+
+  // ctrl/cmd+click a [[link]] to follow it
+  editor.ta.addEventListener("click", (e) => {
+    if (e.ctrlKey || e.metaKey) followLinkAtCaret();
+  });
+
+  els.toast.addEventListener("click", () => {
+    toastAction?.();
+    els.toast.hidden = true;
+  });
+  els.statsBar.addEventListener("click", showStats);
+  els.statsView.addEventListener("mousedown", (e) => {
+    if (e.target === els.statsView) hideStats();
+  });
+
   // Pick up edits made outside the app when the window comes back.
   window.addEventListener("focus", async () => {
     try {
@@ -841,6 +1126,7 @@ async function main(): Promise<void> {
     console.error(e);
   }
   state = normalizeState(rawState ? JSON.parse(rawState) : null);
+  stats = new TypingStats(state.stats);
 
   try {
     await openVault(state.notesDir ?? (await backend.defaultRoot()));
@@ -868,10 +1154,12 @@ async function main(): Promise<void> {
       if (!n || n.deletedAt) return;
       vault.setBody(n, value);
       find.refresh();
+      paintLinks();
       renderStats();
       renderSoon();
     },
     onType,
+    onTyped: (x, y, h, ch) => spawnEffect(settings().typingAnimation, els.fx, editor.caretEl, x, y, h, ch),
   });
   find = new Find($("#find"), editor, $("#highlights"), els.scroller);
 
@@ -886,6 +1174,11 @@ async function main(): Promise<void> {
   renderFolders();
   openNote(start?.id ?? null);
   document.body.classList.add("ready");
+
+  const DAY = 24 * 60 * 60 * 1000;
+  if (backend.desktop && settings().checkUpdates && Date.now() - state.lastUpdateCheck > DAY) {
+    setTimeout(() => void checkUpdates(false), 3000);
+  }
 }
 
 void main();

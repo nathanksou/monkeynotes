@@ -9,6 +9,8 @@
 export interface EditorCallbacks {
   onChange(value: string): void;
   onType(insertedChars: number): void;
+  /** Called after the caret has moved for a typed character (for animations). */
+  onTyped?(x: number, y: number, h: number, ch: string): void;
 }
 
 export class Editor {
@@ -20,6 +22,7 @@ export class Editor {
   private raf = 0;
   private typingTimer = 0;
   private follow = false;
+  private pendingFx: string | null = null;
 
   constructor(
     wrap: HTMLElement,
@@ -35,7 +38,10 @@ export class Editor {
     const ta = this.ta;
     ta.addEventListener("input", (e) => {
       const ie = e as InputEvent;
-      if (ie.inputType?.startsWith("insert")) this.cb.onType(ie.data?.length ?? 1);
+      if (ie.inputType?.startsWith("insert")) {
+        this.cb.onType(ie.data?.length ?? 1);
+        this.pendingFx = ie.inputType === "insertLineBreak" ? "\n" : (ie.data?.slice(-1) ?? "");
+      }
       this.markTyping();
       this.follow = true;
       this.cb.onChange(ta.value);
@@ -66,6 +72,10 @@ export class Editor {
     });
     new ResizeObserver(() => this.schedule()).observe(wrap);
     document.fonts?.ready.then(() => this.schedule());
+  }
+
+  get caretEl(): HTMLElement {
+    return this.caret;
   }
 
   get value(): string {
@@ -143,6 +153,10 @@ export class Editor {
     if (this.follow) {
       this.follow = false;
       this.keepVisible(y, h);
+    }
+    if (this.pendingFx !== null) {
+      this.cb.onTyped?.(x, y, h, this.pendingFx);
+      this.pendingFx = null;
     }
   }
 
