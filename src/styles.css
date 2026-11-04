@@ -1415,3 +1415,14 @@ kbd {
 #sidebar-toggle.closed .ico-expand {
   display: block;
 }
+
+/* toolbar star: filled while the open note is starred; buttons dim when no note is open */
+#star-note.on svg {
+  fill: var(--main);
+  stroke: var(--main);
+}
+
+.icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}

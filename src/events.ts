@@ -3,7 +3,7 @@ import { ROOT, noteTitle } from "./model";
 import { type KeyType, playKey } from "./sound";
 import { $, app, current, els, folderName, galleryShown, isGrid, isRealFolder, notesInView, settings, toast, toastAction, writeState } from "./app";
 import { renderAll, renderNotes } from "./list";
-import { confirmEmptyTrash, moveNote, newFolder, newNote, openFolder, openNote, renameFolder, stepNote, toggleCollapsed } from "./notes";
+import { confirmEmptyTrash, moveNote, toggleStar, newFolder, newNote, openFolder, openNote, renameFolder, stepNote, toggleCollapsed } from "./notes";
 import { applyView, backToGallery, bindResizeHandles, focusGallery, focusSearch, galleryKey, narrow, restoreFocus, setSetting, setView, toggleFolders } from "./layout";
 import { followLinkAtCaret, hideStats, showStats } from "./typing";
 import { folderCommands, jumpMenu, noteCommands, openPalette } from "./commands";
@@ -207,6 +207,10 @@ export function bindEvents(): void {
   });
   $("#new-folder").addEventListener("click", () => void newFolder());
   $("#open-palette").addEventListener("click", () => openPalette());
+  $("#star-note").addEventListener("click", () => {
+    const n = current();
+    if (n && !n.deletedAt) toggleStar(n);
+  });
   $("#open-history").addEventListener("click", () => {
     const n = current();
     if (!n || n.deletedAt || galleryShown()) return toast("open a note to see its version history");

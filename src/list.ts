@@ -196,6 +196,23 @@ export function renderStats(): void {
       ? "in the trash · restore it from the command line, or it's deleted after 30 days"
       : `${folderPath(n.folderId)} · ${wordCount(n.body)} words · edited ${formatDate(n.updatedAt)}`
     : "";
+  updateNoteButtons(n);
+}
+
+/** The toolbar's star and history buttons follow the open note. */
+function updateNoteButtons(n: Note | undefined): void {
+  const usable = !!n && !n.deletedAt;
+  const star = document.getElementById("star-note") as HTMLButtonElement | null;
+  if (star) {
+    star.disabled = !usable;
+    star.classList.toggle("on", !!n?.starred);
+    star.setAttribute("aria-pressed", String(!!n?.starred));
+    const label = n?.starred ? "unstar note" : "star note";
+    star.title = label;
+    star.setAttribute("aria-label", label);
+  }
+  const history = document.getElementById("open-history") as HTMLButtonElement | null;
+  if (history) history.disabled = !usable;
 }
 
 let statsTimer = 0;
