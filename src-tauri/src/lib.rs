@@ -18,9 +18,10 @@
 //! freezes the window.
 
 use std::collections::HashMap;
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, File};
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,6 +45,10 @@ const HISTORY_KEEP: usize = 50;
 const HISTORY_MAX_AGE_MS: u64 = 90 * 24 * 60 * 60 * 1000;
 /// Error prefix the UI looks for to pick another name instead of overwriting.
 const EEXIST: &str = "EEXIST";
+/// Error prefix for "the file you're acting on isn't there (any more)".
+const NOT_FOUND: &str = "NOT_FOUND";
+/// Files the OS drops into folders; they don't stop a folder from being deleted.
+const JUNK_FILES: [&str; 3] = [".DS_Store", "Thumbs.db", "desktop.ini"];
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
@@ -65,6 +70,14 @@ fn resolve(root: &Path, rel: &str) -> Res<PathBuf> {
     if cfg!(windows) && rel.contains(['\\', ':']) {
         return Err(format!("invalid path: {rel}"));
     }
+    // "a//b" and (on Windows) "a./b" or "a /b" are other spellings of real
+    // paths; refuse them so every check below sees one canonical form.
+    let aliased = rel
+        .split('/')
+        .any(|seg| seg.is_empty() || (cfg!(windows) && (seg.ends_with('.') || seg.ends_with(' '))));
+    if aliased {
+        return Err(format!("invalid path: {rel}"));
+    }
     let safe = !rel.is_empty() && rel_path.components().all(|c| matches!(c, Component::Normal(_)));
     if !safe {
         return Err(format!("invalid path: {rel}"));
@@ -78,6 +91,7 @@ fn resolve(root: &Path, rel: &str) -> Res<PathBuf> {
 /// Obsidian vault's `.obsidian/plugins`, and from non-note files.
 fn note_path(root: &Path, rel: &str, allow_meta: bool) -> Res<PathBuf> {
     let full = resolve(root, rel)?;
+    no_symlinks(root, rel)?;
     if allow_meta && rel == META_FILE {
         return Ok(full);
     }
@@ -94,9 +108,27 @@ fn note_path(root: &Path, rel: &str, allow_meta: bool) -> Res<PathBuf> {
     Ok(full)
 }
 
+/// Refuse paths that go through a symlink inside the notes folder: following
+/// one would let a note operation act on files outside it.
+fn no_symlinks(root: &Path, rel: &str) -> Res<()> {
+    let mut p = root.to_path_buf();
+    for part in rel.split('/') {
+        p.push(part);
+        match fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(format!("{rel} goes through a symlink, which isn't followed"))
+            }
+            Ok(_) => {}
+            Err(_) => break, // doesn't exist yet: nothing further can be a link
+        }
+    }
+    Ok(())
+}
+
 /// A folder inside the notes folder (no hidden folders, including `.trash`).
 fn folder_path(root: &Path, rel: &str) -> Res<PathBuf> {
     let full = resolve(root, rel)?;
+    no_symlinks(root, rel)?;
     if rel.split('/').any(is_hidden) {
         return Err(format!("not a notes folder: {rel}"));
     }
@@ -111,19 +143,75 @@ fn read_opt(path: &Path) -> Res<Option<String>> {
     }
 }
 
-/// Write via a temp file + rename so a crash never leaves a half-written note.
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A temp file name next to `path` that no other write is using.
+fn temp_beside(path: &Path) -> PathBuf {
+    let mut t = path.as_os_str().to_owned();
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    t.push(format!(".{}-{n}.tmp", std::process::id()));
+    PathBuf::from(t)
+}
+
+/// Write `contents` to `tmp` and make sure it reached the disk.
+fn write_temp(tmp: &Path, contents: &str) -> Res<()> {
+    let mut f = File::create(tmp).map_err(err)?;
+    f.write_all(contents.as_bytes()).map_err(err)?;
+    f.sync_all().map_err(err)
+}
+
+/// Make a rename in `dir` survive a power cut (Unix; Windows has no equivalent).
+fn sync_dir(dir: Option<&Path>) {
+    #[cfg(unix)]
+    if let Some(d) = dir.and_then(|d| File::open(d).ok()) {
+        let _ = d.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+/// Write via a synced temp file + rename so a crash never leaves a
+/// half-written or empty note.
 fn write_atomic(path: &Path, contents: &str) -> Res<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(err)?;
     }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, contents).map_err(err)?;
+    let tmp = temp_beside(path);
+    write_temp(&tmp, contents).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })?;
     fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         err(e)
-    })
+    })?;
+    sync_dir(path.parent());
+    Ok(())
+}
+
+/// Like write_atomic, but fails with EEXIST instead of replacing a file that
+/// already exists. Uses a hard link, which can't replace anything, so even a
+/// file that appears at the last moment (a sync client) is safe; on disks
+/// without hard links it falls back to checking first.
+fn write_new(path: &Path, contents: &str, label: &str) -> Res<()> {
+    if path.exists() {
+        return Err(format!("{EEXIST}: {label}"));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(err)?;
+    }
+    let tmp = temp_beside(path);
+    write_temp(&tmp, contents).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })?;
+    let result = match fs::hard_link(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(format!("{EEXIST}: {label}")),
+        Err(_) if path.exists() => Err(format!("{EEXIST}: {label}")),
+        Err(_) => fs::rename(&tmp, path).map_err(err),
+    };
+    let _ = fs::remove_file(&tmp);
+    sync_dir(path.parent());
+    result
 }
 
 fn is_note(path: &Path) -> bool {
@@ -182,7 +270,7 @@ fn load_notes_dir(app: &AppHandle) -> NotesDir {
     let saved = root_setting_file(app)
         .ok()
         .and_then(|f| fs::read_to_string(f).ok())
-        .map(|s| PathBuf::from(s.trim()))
+        .map(|s| PathBuf::from(s.trim_end_matches(['\n', '\r'])))
         .filter(|p| p.is_absolute());
     NotesDir(Mutex::new(match saved {
         Some(p) => (p, true),
@@ -198,7 +286,12 @@ async fn notes_dir(dir: State<'_, NotesDir>) -> Res<String> {
 /// Let the user pick a new notes folder. Returns the new path, or None if cancelled.
 #[tauri::command]
 async fn choose_notes_dir(app: AppHandle, dir: State<'_, NotesDir>) -> Res<Option<String>> {
-    let Some(picked) = app.dialog().file().set_title("choose a notes folder").blocking_pick_folder() else {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("choose a notes folder")
+        .blocking_pick_folder()
+    else {
         return Ok(None);
     };
     let path = dialog_path(picked)?;
@@ -278,16 +371,23 @@ struct Scan {
 }
 
 fn read_notes(root: &Path, rel_dir: &str, known: &HashMap<String, u64>, out: &mut Vec<FileEntry>) -> Res<()> {
-    let dir = if rel_dir.is_empty() { root.to_path_buf() } else { root.join(rel_dir) };
+    let dir = if rel_dir.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel_dir)
+    };
     let entries = match fs::read_dir(&dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(err(e)),
+        // a subfolder we can't read (e.g. "System Volume Information") is skipped
+        Err(e) if rel_dir.is_empty() => return Err(err(e)),
+        Err(_) => return Ok(()),
     };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if is_hidden(&name) || !path.is_file() || !is_note(&path) {
+        let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false); // not through symlinks
+        if is_hidden(&name) || !is_file || !is_note(&path) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -296,7 +396,11 @@ fn read_notes(root: &Path, rel_dir: &str, known: &HashMap<String, u64>, out: &mu
         }
         let modified = millis(meta.modified()).unwrap_or(0);
         let created = millis(meta.created()).unwrap_or(modified);
-        let rel = if rel_dir.is_empty() { name } else { format!("{rel_dir}/{name}") };
+        let rel = if rel_dir.is_empty() {
+            name
+        } else {
+            format!("{rel_dir}/{name}")
+        };
         let body = if modified != 0 && known.get(&rel) == Some(&modified) {
             None
         } else {
@@ -304,7 +408,12 @@ fn read_notes(root: &Path, rel_dir: &str, known: &HashMap<String, u64>, out: &mu
             let Ok(text) = fs::read_to_string(&path) else { continue };
             Some(text)
         };
-        out.push(FileEntry { path: rel, body, created, modified });
+        out.push(FileEntry {
+            path: rel,
+            body,
+            created,
+            modified,
+        });
     }
     Ok(())
 }
@@ -318,14 +427,27 @@ fn scan_dirs(
     dirs: &mut Vec<String>,
     files: &mut Vec<FileEntry>,
 ) -> Res<()> {
-    let dir = if rel_dir.is_empty() { root.to_path_buf() } else { root.join(rel_dir) };
-    for entry in fs::read_dir(&dir).map_err(err)?.flatten() {
+    let dir = if rel_dir.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel_dir)
+    };
+    let entries = match fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(e) if rel_dir.is_empty() => return Err(err(e)),
+        Err(_) => return Ok(()), // unreadable subfolder: skip it, keep the rest
+    };
+    for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false); // symlinks are not dirs here
         if is_hidden(&name) || !is_dir {
             continue;
         }
-        let rel = if rel_dir.is_empty() { name } else { format!("{rel_dir}/{name}") };
+        let rel = if rel_dir.is_empty() {
+            name
+        } else {
+            format!("{rel_dir}/{name}")
+        };
         read_notes(root, &rel, known, files)?;
         if depth > 1 {
             scan_dirs(root, &rel, depth - 1, known, dirs, files)?;
@@ -368,37 +490,53 @@ async fn scan(dir: State<'_, NotesDir>, known: Option<HashMap<String, u64>>) -> 
 #[tauri::command]
 async fn write_file(dir: State<'_, NotesDir>, path: String, contents: String, create_new: bool) -> Res<()> {
     let target = note_path(&dir.root(), &path, true)?;
-    if create_new && target.exists() {
-        return Err(format!("{EEXIST}: {path}"));
+    if create_new {
+        write_new(&target, &contents, &path)
+    } else {
+        write_atomic(&target, &contents)
     }
-    write_atomic(&target, &contents)
 }
 
+/// Rename without ever replacing what's at `dst` (EEXIST). Files are moved with
+/// a hard link + unlink, which can't replace anything even if `dst` appears at
+/// the last moment; folders (and disks without hard links) check first.
 fn rename_no_clobber(src: &Path, dst: &Path, from: &str, to: &str) -> Res<()> {
     if src == dst {
         return Ok(());
     }
+    if fs::symlink_metadata(src).is_err() {
+        return Err(format!("{NOT_FOUND}: {from}"));
+    }
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(err)?;
     }
-    if from.to_lowercase() != to.to_lowercase() {
+    if from.to_lowercase() == to.to_lowercase() {
+        // Case-only rename ("notes" -> "Notes"). On a case-insensitive disk dst
+        // "exists" because it's the same file; on a case-sensitive one it may be
+        // a different file. Go through a temp name and check which it is.
+        let tmp = temp_beside(src);
+        fs::rename(src, &tmp).map_err(err)?;
+        if dst.exists() {
+            let _ = fs::rename(&tmp, src);
+            return Err(format!("{EEXIST}: {to}"));
+        }
+        return fs::rename(&tmp, dst).map_err(err);
+    }
+    if src.is_dir() {
         if dst.exists() {
             return Err(format!("{EEXIST}: {to}"));
         }
         return fs::rename(src, dst).map_err(err);
     }
-    // Case-only rename ("notes" -> "Notes"). On a case-insensitive disk dst
-    // "exists" because it's the same file; on a case-sensitive one it may be a
-    // different file. Go through a temp name and check which it is.
-    let mut tmp = src.as_os_str().to_owned();
-    tmp.push(".renaming");
-    let tmp = PathBuf::from(tmp);
-    fs::rename(src, &tmp).map_err(err)?;
-    if dst.exists() {
-        let _ = fs::rename(&tmp, src);
-        return Err(format!("{EEXIST}: {to}"));
+    match fs::hard_link(src, dst) {
+        Ok(()) => fs::remove_file(src).map_err(|e| {
+            let _ = fs::remove_file(dst); // keep exactly one copy
+            err(e)
+        }),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(format!("{EEXIST}: {to}")),
+        Err(_) if dst.exists() => Err(format!("{EEXIST}: {to}")),
+        Err(_) => fs::rename(src, dst).map_err(err),
     }
-    fs::rename(&tmp, dst).map_err(err)
 }
 
 /// Rename a note, or a folder. Never overwrites (EEXIST).
@@ -426,10 +564,20 @@ async fn make_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
     fs::create_dir_all(folder_path(&dir.root(), &path)?).map_err(err)
 }
 
-/// Remove a folder. Only succeeds when it is empty, so non-note files are never lost.
+/// Remove a folder. Only succeeds when it is empty (apart from files like
+/// .DS_Store the OS drops there), so real files are never lost.
 #[tauri::command]
 async fn remove_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    match fs::remove_dir(folder_path(&dir.root(), &path)?) {
+    let target = folder_path(&dir.root(), &path)?;
+    if let Ok(entries) = fs::read_dir(&target) {
+        let names: Vec<_> = entries.flatten().map(|e| e.file_name()).collect();
+        if names.iter().all(|n| JUNK_FILES.iter().any(|j| n == *j)) {
+            for n in &names {
+                let _ = fs::remove_file(target.join(n));
+            }
+        }
+    }
+    match fs::remove_dir(&target) {
         Err(e) if e.kind() != ErrorKind::NotFound => Err(err(e)),
         _ => Ok(()),
     }
@@ -454,15 +602,24 @@ fn history_dir(root: &Path, rel: &str, folder: bool) -> Res<PathBuf> {
     } else {
         note_path(root, rel, false)?;
     }
+    no_symlinks(root, &format!("{HISTORY_DIR}/{rel}"))?;
     Ok(root.join(HISTORY_DIR).join(rel))
 }
 
-/// Version timestamps in a history folder, newest first.
+/// "1793740000000.md" -> 1793740000000
+fn version_of(name: &std::ffi::OsStr) -> Option<u64> {
+    name.to_str()?.strip_suffix(".md")?.parse().ok()
+}
+
+/// Version timestamps directly in a history folder, newest first. (A note's
+/// history folder can also hold folders, when a folder has the same name as
+/// the note; those are someone else's history and are never touched here.)
 fn versions_in(dir: &Path) -> Vec<u64> {
     let mut out: Vec<u64> = match fs::read_dir(dir) {
         Ok(rd) => rd
             .flatten()
-            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".md")?.parse().ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .filter_map(|e| version_of(&e.file_name()))
             .collect(),
         Err(_) => Vec::new(),
     };
@@ -479,16 +636,20 @@ fn prune_history(dir: &Path, now: u64) {
     }
 }
 
-fn save_version(root: &Path, path: &str, contents: &str, now: u64) -> Res<u64> {
-    let dir = history_dir(root, path, false)?;
-    // two saves in the same millisecond: take the next free one
-    let mut at = now;
+/// The first free "<at>.md" in `dir` at or after `at`.
+fn free_version_name(dir: &Path, mut at: u64) -> PathBuf {
     while dir.join(format!("{at}.md")).exists() {
         at += 1;
     }
-    write_atomic(&dir.join(format!("{at}.md")), contents)?;
+    dir.join(format!("{at}.md"))
+}
+
+fn save_version(root: &Path, path: &str, contents: &str, now: u64) -> Res<u64> {
+    let dir = history_dir(root, path, false)?;
+    let file = free_version_name(&dir, now);
+    write_atomic(&file, contents)?;
     prune_history(&dir, now);
-    Ok(at)
+    Ok(version_of(file.file_name().unwrap_or_default()).unwrap_or(now))
 }
 
 /// Store `contents` as a version of the note at `path`. Returns its timestamp.
@@ -509,7 +670,19 @@ async fn history_read(dir: State<'_, NotesDir>, path: String, at: u64) -> Res<St
     fs::read_to_string(file).map_err(err)
 }
 
-/// Move everything in `src` into `dst`, never replacing an entry already there.
+/// Move version files (only) from one note's history folder to another's,
+/// renumbering any that collide instead of dropping them.
+fn move_versions(src: &Path, dst: &Path) -> Res<()> {
+    fs::create_dir_all(dst).map_err(err)?;
+    for at in versions_in(src) {
+        fs::rename(src.join(format!("{at}.md")), free_version_name(dst, at)).map_err(err)?;
+    }
+    let _ = fs::remove_dir(src); // only if nothing else lives there
+    Ok(())
+}
+
+/// Move a whole folder's history into `dst`, keeping everything: entries that
+/// collide are merged (folders) or renumbered (versions).
 fn merge_dir(src: &Path, dst: &Path) -> Res<()> {
     if !dst.exists() {
         if let Some(parent) = dst.parent() {
@@ -518,11 +691,11 @@ fn merge_dir(src: &Path, dst: &Path) -> Res<()> {
         return fs::rename(src, dst).map_err(err);
     }
     for entry in fs::read_dir(src).map_err(err)?.flatten() {
-        let target = dst.join(entry.file_name());
+        let name = entry.file_name();
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            merge_dir(&entry.path(), &target)?;
-        } else if !target.exists() {
-            fs::rename(entry.path(), target).map_err(err)?;
+            merge_dir(&entry.path(), &dst.join(&name))?;
+        } else if let Some(at) = version_of(&name) {
+            fs::rename(entry.path(), free_version_name(dst, at)).map_err(err)?;
         }
     }
     let _ = fs::remove_dir_all(src);
@@ -535,7 +708,20 @@ fn move_history(root: &Path, from: &str, to: &str, folder: bool) -> Res<()> {
     if !src.exists() || src == dst {
         return Ok(());
     }
-    merge_dir(&src, &dst)
+    // A case-only rename ("ideas" -> "Ideas"): on a case-insensitive disk src and
+    // dst are the same folder, so step through a temp name first.
+    let src = if from.to_lowercase() == to.to_lowercase() {
+        let tmp = temp_beside(&src);
+        fs::rename(&src, &tmp).map_err(err)?;
+        tmp
+    } else {
+        src
+    };
+    if folder {
+        merge_dir(&src, &dst)
+    } else {
+        move_versions(&src, &dst)
+    }
 }
 
 /// Move a note's history after it was renamed (or a folder's, with `folder`).
@@ -544,20 +730,25 @@ async fn history_move(dir: State<'_, NotesDir>, from: String, to: String, folder
     move_history(&dir.root(), &from, &to, folder)
 }
 
-/// Remove versions saved at or after `since` (all of them when None) from a
-/// history folder and everything inside it. Returns how many were (or, with
-/// `dry_run`, would be) removed. Folders left empty are removed too.
-fn clear_versions(dir: &Path, since: Option<u64>, dry_run: bool) -> u64 {
+/// Remove versions saved at or after `since` (all of them when None). With
+/// `recursive`, also inside every folder below (a whole folder's or all
+/// history); without, only the versions directly in `dir` (one note's).
+/// Returns how many were (or, with `dry_run`, would be) removed. Folders left
+/// empty are removed too.
+fn clear_versions(dir: &Path, since: Option<u64>, dry_run: bool, recursive: bool) -> u64 {
     let Ok(entries) = fs::read_dir(dir) else { return 0 };
     let mut removed = 0;
     for entry in entries.flatten() {
         let path = entry.path();
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            removed += clear_versions(&path, since, dry_run);
+            if recursive {
+                removed += clear_versions(&path, since, dry_run, true);
+            }
             continue;
         }
-        let at = entry.file_name().to_str().and_then(|n| n.strip_suffix(".md")).and_then(|n| n.parse::<u64>().ok());
-        let Some(at) = at else { continue };
+        let Some(at) = version_of(&entry.file_name()) else {
+            continue;
+        };
         if since.map_or(true, |s| at >= s) && (dry_run || fs::remove_file(&path).is_ok()) {
             removed += 1;
         }
@@ -575,7 +766,7 @@ async fn history_clear(dir: State<'_, NotesDir>, paths: Vec<String>, since: Opti
     let root = dir.root();
     let mut removed = 0;
     for p in paths {
-        removed += clear_versions(&history_dir(&root, &p, false)?, since, dry_run);
+        removed += clear_versions(&history_dir(&root, &p, false)?, since, dry_run, false);
     }
     Ok(removed)
 }
@@ -583,16 +774,15 @@ async fn history_clear(dir: State<'_, NotesDir>, paths: Vec<String>, since: Opti
 /// Clear version history for every note, from `since` on (or all time).
 #[tauri::command]
 async fn history_clear_all(dir: State<'_, NotesDir>, since: Option<u64>, dry_run: bool) -> Res<u64> {
-    Ok(clear_versions(&dir.root().join(HISTORY_DIR), since, dry_run))
+    Ok(clear_versions(&dir.root().join(HISTORY_DIR), since, dry_run, true))
 }
 
-/// Forget a note's history (when the note is deleted for good).
+/// Forget a note's history (when the note is deleted for good, or a new note
+/// takes a path that still has someone else's old history).
 #[tauri::command]
 async fn history_delete(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    match fs::remove_dir_all(history_dir(&dir.root(), &path, false)?) {
-        Err(e) if e.kind() != ErrorKind::NotFound => Err(err(e)),
-        _ => Ok(()),
-    }
+    clear_versions(&history_dir(&dir.root(), &path, false)?, None, false, false);
+    Ok(())
 }
 
 // ------------------------------------------------------------------ import / export
@@ -611,7 +801,9 @@ struct ExtDir {
 }
 
 fn stem(path: &Path) -> String {
-    path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn read_ext_dir(path: &Path, depth: u8) -> Res<ExtDir> {
@@ -625,14 +817,19 @@ fn read_ext_dir(path: &Path, depth: u8) -> Res<ExtDir> {
             continue;
         }
         if kind.is_dir() && depth > 0 {
-            dirs.push(read_ext_dir(&p, depth - 1)?);
+            if let Ok(sub) = read_ext_dir(&p, depth - 1) {
+                dirs.push(sub); // unreadable subfolders are skipped
+            }
         } else if kind.is_file() && is_note(&p) {
             if let Ok(body) = read_note_file(&p) {
                 files.push(ExtFile { name: stem(&p), body });
             }
         }
     }
-    let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     Ok(ExtDir { name, files, dirs })
 }
 
@@ -649,9 +846,19 @@ async fn import_files(app: AppHandle) -> Res<Option<Vec<ExtFile>>> {
         return Ok(None);
     };
     let mut out = Vec::new();
+    let mut failed = Vec::new();
     for p in picked {
         let path = dialog_path(p)?;
-        out.push(ExtFile { name: stem(&path), body: read_note_file(&path)? });
+        match read_note_file(&path) {
+            Ok(body) => out.push(ExtFile {
+                name: stem(&path),
+                body,
+            }),
+            Err(e) => failed.push(e), // e.g. not UTF-8: skip it, import the rest
+        }
+    }
+    if out.is_empty() && !failed.is_empty() {
+        return Err(failed.join("; "));
     }
     Ok(Some(out))
 }
@@ -659,7 +866,12 @@ async fn import_files(app: AppHandle) -> Res<Option<Vec<ExtFile>>> {
 /// Ask for a folder to import and return its notes, including subfolders.
 #[tauri::command]
 async fn import_dir(app: AppHandle) -> Res<Option<ExtDir>> {
-    let Some(picked) = app.dialog().file().set_title("import a folder of notes").blocking_pick_folder() else {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("import a folder of notes")
+        .blocking_pick_folder()
+    else {
         return Ok(None);
     };
     read_ext_dir(&dialog_path(picked)?, MAX_DEPTH).map(Some)
@@ -688,19 +900,36 @@ struct ExportFile {
     body: String,
 }
 
-/// Copy notes into a new `folder_name` inside a folder the user chooses.
-/// Returns where they went, or None if cancelled.
+/// Copy notes into a brand-new "monkeynotes-export-<date>" folder inside a
+/// folder the user chooses. The folder name is made here, never by the UI; the
+/// folder must not exist yet ("... 2" etc. otherwise); and only note files are
+/// written into it, never replacing anything. Returns where they went, or None
+/// if cancelled.
 #[tauri::command]
-async fn export_all(app: AppHandle, folder_name: String, files: Vec<ExportFile>) -> Res<Option<String>> {
-    let Some(picked) = app.dialog().file().set_title("export all notes into...").blocking_pick_folder() else {
+async fn export_all(app: AppHandle, date: String, files: Vec<ExportFile>) -> Res<Option<String>> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("export all notes into...")
+        .blocking_pick_folder()
+    else {
         return Ok(None);
     };
-    if folder_name.contains(['/', '\\']) {
-        return Err(format!("invalid folder name: {folder_name}"));
-    }
-    let dest = resolve(&dialog_path(picked)?, &folder_name)?;
+    let parent = dialog_path(picked)?;
+    let date: String = date
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .take(10)
+        .collect();
+    let dest = (1..1000)
+        .map(|i| {
+            let suffix = if i > 1 { format!(" {i}") } else { String::new() };
+            parent.join(format!("monkeynotes-export-{date}{suffix}"))
+        })
+        .find(|d| fs::create_dir(d).is_ok())
+        .ok_or_else(|| format!("couldn't create an export folder in {}", parent.display()))?;
     for f in files {
-        write_atomic(&resolve(&dest, &f.path)?, &f.body)?;
+        write_new(&note_path(&dest, &f.path, false)?, &f.body, &f.path)?;
     }
     Ok(Some(dest.display().to_string()))
 }
@@ -767,7 +996,17 @@ mod tests {
     #[test]
     fn resolve_rejects_escapes() {
         let root = Path::new("/notes");
-        for bad in ["", "..", "../a.md", "ideas/../../a.md", "/etc/passwd", "./a.md"] {
+        for bad in [
+            "",
+            "..",
+            "../a.md",
+            "ideas/../../a.md",
+            "/etc/passwd",
+            "./a.md",
+            "a//b.md",
+            "a/./b.md",
+            "a/",
+        ] {
             assert!(resolve(root, bad).is_err(), "{bad} should be rejected");
         }
     }
@@ -837,22 +1076,110 @@ mod tests {
 
         move_history(&root, "ideas/a.md", "ideas/b.md", false).unwrap();
         assert!(!dir.exists());
-        assert_eq!(versions_in(&history_dir(&root, "ideas/b.md", false).unwrap()).len(), HISTORY_KEEP);
+        assert_eq!(
+            versions_in(&history_dir(&root, "ideas/b.md", false).unwrap()).len(),
+            HISTORY_KEEP
+        );
 
         move_history(&root, "ideas", "work", true).unwrap();
-        assert_eq!(versions_in(&history_dir(&root, "work/b.md", false).unwrap()).len(), HISTORY_KEEP);
+        assert_eq!(
+            versions_in(&history_dir(&root, "work/b.md", false).unwrap()).len(),
+            HISTORY_KEEP
+        );
 
         // clearing: count first, then only the recent ones, then everything
         let work = root.join(HISTORY_DIR).join("work");
-        let all = clear_versions(&work, None, true);
+        let all = clear_versions(&work, None, true, true);
         assert_eq!(all, HISTORY_KEEP as u64);
         let newest = versions_in(&history_dir(&root, "work/b.md", false).unwrap())[0];
-        assert_eq!(clear_versions(&work, Some(newest), false), 1);
-        assert_eq!(clear_versions(&work, None, false), (HISTORY_KEEP - 1) as u64);
+        assert_eq!(clear_versions(&work, Some(newest), false, true), 1);
+        assert_eq!(clear_versions(&work, None, false, true), (HISTORY_KEEP - 1) as u64);
         assert!(!work.exists());
 
         assert!(history_dir(&root, "../escape.md", false).is_err());
         assert!(history_dir(&root, ".git/x.md", false).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn write_new_never_overwrites_and_write_atomic_replaces() {
+        let root = temp_root("write");
+        let f = root.join("a.md");
+        write_new(&f, "first", "a.md").unwrap();
+        assert!(write_new(&f, "second", "a.md").unwrap_err().starts_with(EEXIST));
+        assert_eq!(fs::read_to_string(&f).unwrap(), "first");
+        write_atomic(&f, "replaced").unwrap();
+        assert_eq!(fs::read_to_string(&f).unwrap(), "replaced");
+        // no temp files left behind
+        let names: Vec<_> = fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names, ["a.md"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn renames_report_missing_sources_and_never_overwrite_folders() {
+        let root = temp_root("rename2");
+        let err = rename_no_clobber(&root.join("gone.md"), &root.join("x.md"), "gone.md", "x.md").unwrap_err();
+        assert!(err.starts_with(NOT_FOUND));
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b")).unwrap();
+        assert!(rename_no_clobber(&root.join("a"), &root.join("b"), "a", "b")
+            .unwrap_err()
+            .starts_with(EEXIST));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_inside_the_notes_folder_are_refused() {
+        let root = temp_root("symlink");
+        let outside = temp_root("symlink-outside");
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        assert!(note_path(&root, "link/x.md", false).is_err());
+        assert!(folder_path(&root, "link").is_err());
+        assert!(note_path(&root, "real/x.md", false).is_ok());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn note_history_never_touches_a_same_named_folders_history() {
+        let root = temp_root("history-collide");
+        // a note "x.md" and a folder "x.md" with a note inside
+        save_version(&root, "x.md", "note version", 1_000).unwrap();
+        save_version(&root, "x.md/inner.md", "folder note version", 1_000).unwrap();
+        let note_dir = history_dir(&root, "x.md", false).unwrap();
+        assert_eq!(clear_versions(&note_dir, None, true, false), 1);
+        clear_versions(&note_dir, None, false, false);
+        assert_eq!(
+            versions_in(&history_dir(&root, "x.md/inner.md", false).unwrap()).len(),
+            1
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn moving_history_keeps_colliding_versions_and_handles_case_only_renames() {
+        let root = temp_root("history-move");
+        save_version(&root, "a.md", "from a", 5_000).unwrap();
+        save_version(&root, "b.md", "already at b", 5_000).unwrap();
+        move_history(&root, "a.md", "b.md", false).unwrap();
+        let b = history_dir(&root, "b.md", false).unwrap();
+        assert_eq!(versions_in(&b), [5_001, 5_000]);
+        move_history(&root, "b.md", "B.md", false).unwrap();
+        let big = history_dir(&root, "B.md", false).unwrap();
+        assert_eq!(versions_in(&big).len(), 2, "a case-only rename must keep the history");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn history_prunes_by_age_even_below_the_count_limit() {
+        let root = temp_root("history-age");
+        let day = 24 * 60 * 60 * 1000;
+        save_version(&root, "a.md", "old", 1_000 * day).unwrap();
+        save_version(&root, "a.md", "new", 1_000 * day + 91 * day).unwrap();
+        let dir = history_dir(&root, "a.md", false).unwrap();
+        assert_eq!(versions_in(&dir), [1_000 * day + 91 * day]);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -882,7 +1209,8 @@ mod tests {
             assert_eq!(fs::read_to_string(root.join("notes.md")).unwrap(), "lower");
         } else {
             rename_no_clobber(&root.join("notes.md"), &root.join("Notes.md"), "notes.md", "Notes.md").unwrap();
-            assert_eq!(fs::read_to_string(root.join("Notes.md")).unwrap(), "lower");
+            let names: Vec<_> = fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name()).collect();
+            assert_eq!(names, ["Notes.md"], "the stored name must change case");
         }
         fs::remove_dir_all(&root).unwrap();
     }

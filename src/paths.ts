@@ -14,6 +14,9 @@ export const extOf = (path: string) => /\.[^./]+$/.exec(path)?.[0] ?? ".md";
 
 export const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
+/** Whether folder `id` is `root` or inside it. */
+export const isUnder = (id: string, root: string) => id === root || id.startsWith(root + "/");
+
 /** `x` with the folder prefix `from` replaced by `to` ("a/b" with a -> z is "z/b"). */
 export const swapPrefix = (x: string, from: string, to: string) =>
   x === from ? to : x.startsWith(from + "/") ? to + x.slice(from.length) : x;

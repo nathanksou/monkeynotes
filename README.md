@@ -1,14 +1,14 @@
 # monkeynotes
 
-A minimal, distraction-free desktop notes app. It's organized simply, like Apple Notes, and writing in it feels like a typing test: monospace text, a smooth blinking caret, live wpm, and a UI that disappears while you type.
+A minimal, distraction-free desktop notes app. It's organized simply, like Apple Notes, and writing in it feels like a typing test: monospace text, a smooth blinking caret, and live typing stats.
 
 ![monkeynotes](docs/screenshot.png)
 
-<p align="center"><img src="docs/focus.png" width="70%" alt="focus mode: the ui fades while you type" /></p>
+<p align="center"><img src="docs/gallery.png" width="80%" alt="gallery view: notes as a grid of cards" /></p>
 
 ## features
 
-- **organized like Apple Notes**: a folders sidebar (nested as deep as you like) you can hide with the button in the corner, then either a **list view** (notes list next to the editor) or a **gallery view** (a grid of note cards; click one to open it full size, and the back arrow returns to the gallery). The first line of a note is its title, and the list is sorted by last edit, with pinned notes on top.
+- **organized like Apple Notes**: a folders sidebar (folders nest up to 8 levels deep) you can hide with the button in the corner, then either a **list view** (notes list next to the editor) or a **gallery view** (a grid of note cards; click one to open it full size, and the back arrow returns to the gallery). The first line of a note is its title, and the list is sorted by last edit, with starred notes on top.
 - **typing-test feel**: Roboto Mono and a custom smooth caret. Notes open at the top. If you like, `focus mode` fades the UI while you type (off by default).
 - **adjustable sidebars**: drag the folders sidebar's or the notes list's right edge to resize it (double-click the edge to reset).
 - **typing stats**: a stats bar under the editor shows live wpm, words and time typed today, your 30-day average and your daily streak. It stays visible while you type. Click it for a full stats view with a 14-day chart.
@@ -83,7 +83,7 @@ npm run app:build   # build an installer for your OS (output: src-tauri/target/r
 
 `npm test` runs the unit tests (file naming, folders, trash, links, stats), and `cargo test` in `src-tauri` runs the Rust ones.
 
-monkeynotes is desktop-only. For development, `npm run dev` can also serve the UI to a plain browser at http://localhost:1420, with notes kept in a fake file system in localStorage. The UI tests use this. That code lives in `src/backend-browser.ts` and is left out of release builds; a release build opened in a browser just says it's a desktop app.
+monkeynotes is desktop-only. For development, `npm run dev` can also serve the UI to a plain browser at http://localhost:1420, with notes kept in a fake file system in localStorage, which is handy for UI work and for driving the UI with Playwright. That code lives in `src/backend-browser.ts` and is left out of release builds; a release build opened in a browser just says it's a desktop app.
 
 ### layout
 
@@ -95,6 +95,7 @@ src/
   backend-browser.ts    development only: fake notes folder for running the UI in a browser
   errors.ts             error codes shared with the Rust side
   editor.ts             textarea with the custom smooth caret
+  paths.ts              helpers for paths inside the notes folder
   paragraphs.ts         per-paragraph layers, so typing stays fast in long notes
   find.ts               find in note
   stats.ts              typing stats (wpm, streaks, daily totals)
@@ -134,10 +135,10 @@ Push a tag such as `v0.1.0`. The `release` workflow then builds macOS (Apple Sil
 
 ## credits
 
-monkeynotes takes its visual inspiration from [Monkeytype](https://github.com/monkeytypegame/monkeytype), the open-source typing test, and shares its license. The theme palettes in `src/themes-monkeytype.ts` come from Monkeytype (GPL-3.0). monkeynotes is not affiliated with Monkeytype. The font is [Roboto Mono](https://fonts.google.com/specimen/Roboto+Mono), licensed under Apache 2.0.
+monkeynotes takes its visual inspiration from [Monkeytype](https://github.com/monkeytypegame/monkeytype), the open-source typing test, and shares its license. The theme palettes in `src/themes-monkeytype.ts` come from Monkeytype (GPL-3.0); `scripts/gen-monkeytype-themes.py` regenerates them. monkeynotes is not affiliated with Monkeytype. The font is [Roboto Mono](https://fonts.google.com/specimen/Roboto+Mono), under the SIL Open Font License 1.1. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## license
 
 Copyright (C) 2026 Nathan Sou
 
-monkeynotes is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License](LICENSE), either version 3 or (at your option) any later version. If you distribute a modified version, you must release its source under the same license.
+monkeynotes is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License](LICENSE), either version 3 or (at your option) any later version. If you distribute a modified version, you must release its source under the same license. The bundled Monkeytype theme palettes are GPL-3.0, so the app as distributed is under GPL-3.0; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

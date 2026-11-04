@@ -3,5 +3,5 @@
 /** A write or rename would have replaced an existing file. */
 export const isExists = (e: unknown) => String(e).startsWith("EEXIST");
 
-/** The chosen notes folder is missing (e.g. an unplugged drive). */
+/** Something isn't there: the chosen notes folder (e.g. an unplugged drive), or a file being renamed. */
 export const isNotFound = (e: unknown) => String(e).startsWith("NOT_FOUND");

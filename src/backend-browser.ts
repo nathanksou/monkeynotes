@@ -133,6 +133,7 @@ export class BrowserBackend implements Backend {
       }
     } else {
       if (this.files[to] && from !== to) throw `EEXIST: ${to}`;
+      if (!this.files[from]) throw `NOT_FOUND: ${from}`;
       this.files[to] = this.files[from];
       delete this.files[from];
     }

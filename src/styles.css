@@ -114,6 +114,7 @@ kbd {
 }
 
 .brand {
+  padding-left: 2rem; /* room for the sidebar toggle */
   font-size: 1.1rem;
   color: var(--text);
   letter-spacing: -0.02em;
@@ -370,6 +371,7 @@ kbd {
 }
 
 #editor {
+  position: relative; /* above the highlight layers */
   resize: none;
   overflow: hidden;
   outline: none;
@@ -476,7 +478,6 @@ kbd {
 }
 
 #app.typing .pane,
-#app.typing #footer,
 #app.typing #topbar .ghost {
   opacity: 0;
 }
@@ -651,10 +652,6 @@ kbd {
   background: color-mix(in srgb, var(--main) 60%, transparent);
 }
 
-#editor {
-  position: relative;
-}
-
 /* ------------------------------------------------------------ toast */
 
 #toast {
@@ -678,11 +675,6 @@ kbd {
 }
 
 /* ------------------------------------------------------------ stats bar */
-
-#footer {
-  display: flex;
-  justify-content: space-between;
-}
 
 #statsbar {
   display: flex;
@@ -709,11 +701,7 @@ kbd {
   display: none;
 }
 
-/* the stats bar stays visible in focus mode so you can watch it while typing */
-#app.typing #footer {
-  opacity: 1;
-}
-
+/* in focus mode the note info fades; the stats bar stays so you can watch it */
 #app.typing #note-meta {
   opacity: 0;
   transition: opacity 300ms;
@@ -976,10 +964,6 @@ kbd {
   z-index: 6;
 }
 
-.brand {
-  padding-left: 2rem;
-}
-
 /* when the sidebar is hidden, whatever is in that corner makes room for the toggle */
 #app.hide-folders #notes .pane-head,
 #app.hide-folders .gallery-head {
@@ -1174,7 +1158,7 @@ kbd {
 }
 
 @media (max-width: 760px) {
-  /* narrow windows: no room for the folders sidebar */
+  /* narrow windows: the folders sidebar becomes a drawer over the list */
   #app {
     --folders-w: 0px;
   }
@@ -1184,6 +1168,26 @@ kbd {
   #app #folders {
     opacity: 0;
     pointer-events: none;
+  }
+  #app.drawer-open #folders {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 5;
+    width: min(260px, 80vw);
+    opacity: 1;
+    pointer-events: auto;
+    background: var(--bg);
+    box-shadow: 0 0 40px rgb(0 0 0 / 45%);
+  }
+  /* the corner toggle is always there, so the corner always makes room */
+  #notes .pane-head,
+  .gallery-head {
+    padding-left: 3.25rem;
+  }
+  .topbar-left {
+    left: 3.25rem;
   }
 }
 
@@ -1326,21 +1330,18 @@ kbd {
 }
 
 .ghost.danger {
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius);
   color: var(--error);
   font-size: 0.85rem;
+  transition:
+    color var(--speed),
+    background var(--speed);
 }
 
 .ghost.danger:hover {
   color: var(--text);
   background: var(--error);
-}
-
-.ghost.danger {
-  padding: 0.35rem 0.6rem;
-  border-radius: var(--radius);
-  transition:
-    color var(--speed),
-    background var(--speed);
 }
 
 /* a starred subfolder at the top says where it lives */
@@ -1351,4 +1352,27 @@ kbd {
   color: var(--sub);
   opacity: 0.8;
   font-size: 0.7rem;
+}
+
+/* ------------------------------------------------------------ keyboard focus */
+
+.folder:focus-visible,
+.note:focus-visible {
+  outline: 2px solid var(--main);
+  outline-offset: -2px;
+}
+
+#search:focus-visible,
+#gallery-search:focus-visible {
+  box-shadow: 0 0 0 1px var(--main);
+}
+
+.icon:focus-visible,
+.ghost:focus-visible {
+  outline: 2px solid var(--main);
+  outline-offset: 1px;
+}
+
+#stats-view {
+  outline: none;
 }

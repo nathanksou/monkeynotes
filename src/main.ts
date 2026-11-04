@@ -9,7 +9,7 @@ import { isNotFound } from "./errors";
 import { Find } from "./find";
 import { linkAt, linkRanges } from "./links";
 import { ParagraphLayer } from "./paragraphs";
-import { baseOf, stemOf, swapPrefix } from "./paths";
+import { baseOf, isUnder, stemOf, swapPrefix } from "./paths";
 import {
   ALL,
   type AppState,
@@ -51,6 +51,10 @@ const els = {
   scroller: $("#scroller"),
   page: $("#page"),
   statsBar: $("#statsbar"),
+  folders: $("#folders"),
+  notesPane: $("#notes"),
+  topbar: $("#topbar"),
+  footer: $("#footer"),
   gallery: $("#gallery"),
   galleryGrid: $("#gallery-grid"),
   galleryTitle: $("#gallery-title"),
@@ -89,7 +93,6 @@ const folderName = (id: string) =>
 const folderPath = (id: string) => (id === ROOT || id === ALL || id === TRASH ? folderName(id) : id.split("/").join(" / "));
 const depthOf = (id: string) => (id === ROOT || id === ALL || id === TRASH ? 0 : id.split("/").length - 1);
 /** Hidden because a parent folder is collapsed. */
-const isTucked = (id: string) => view().collapsed.some((c) => id.startsWith(c + "/"));
 /** Where new and imported notes go from the current view. */
 const targetFolder = () => (isRealFolder(view().folderId) ? view().folderId : ROOT);
 
@@ -155,24 +158,34 @@ interface FolderRow {
  */
 function folderRows(): FolderRow[] {
   const live = vault.notes.filter((n) => !n.deletedAt);
-  const count = (id: string) => live.filter((n) => n.folderId === id).length;
+  const counts = new Map<string, number>();
+  for (const n of live) counts.set(n.folderId, (counts.get(n.folderId) ?? 0) + 1);
+  const count = (id: string) => counts.get(id) ?? 0;
   const starred = vault.starredFolders;
-  const under = (id: string, root: string) => id === root || id.startsWith(root + "/");
+  const under = isUnder;
   // starred folders that aren't already inside another starred folder
   const starRoots = vault.folders.filter((f) => starred.has(f.id) && ![...starred].some((s) => s !== f.id && under(f.id, s)));
   const inStarBlock = (id: string) => starRoots.some((r) => under(id, r.id));
 
+  // One block of the tree (a starred folder with its subfolders, or the rest).
+  // A row is hidden only by a collapsed folder in the same block, and its
+  // twisty only appears if it has subfolders in the same block.
   const block = (ids: string[], base: (id: string) => number): FolderRow[] => {
-    const visible = ids.filter((id) => !isTucked(id));
-    return visible.map((id) => ({
-      id,
-      name: baseOf(id),
-      parent: base(id) === 0 && id.includes("/") ? folderPath(id.slice(0, id.lastIndexOf("/"))) : undefined,
-      count: count(id),
-      depth: base(id),
-      starred: starred.has(id),
-      hasKids: ids.some((x) => x.startsWith(id + "/")),
-    }));
+    const inBlock = new Set(ids);
+    const collapsed = view().collapsed.filter((c) => inBlock.has(c));
+    const tucked = (id: string) => collapsed.some((c) => isUnder(id, c) && id !== c);
+    const parents = new Set(ids.map((id) => id.slice(0, id.lastIndexOf("/"))).filter((p) => inBlock.has(p)));
+    return ids
+      .filter((id) => !tucked(id))
+      .map((id) => ({
+        id,
+        name: baseOf(id),
+        parent: base(id) === 0 && id.includes("/") ? folderPath(id.slice(0, id.lastIndexOf("/"))) : undefined,
+        count: count(id),
+        depth: base(id),
+        starred: starred.has(id),
+        hasKids: id !== ROOT && parents.has(id),
+      }));
   };
 
   const rows: FolderRow[] = [{ id: ALL, name: "all notes", count: live.length, depth: 0 }];
@@ -193,8 +206,8 @@ function renderFolders(): void {
       const li = document.createElement("li");
       li.dataset.id = r.id;
       li.className = "folder";
+      li.tabIndex = 0;
       if (r.id === view().folderId) li.classList.add("active");
-      if (r.id === ALL || r.id === TRASH) li.classList.add("smart");
       if (r.starred) li.classList.add("starred");
       li.style.setProperty("--depth", String(r.depth));
       const twisty = document.createElement("span");
@@ -203,7 +216,7 @@ function renderFolders(): void {
         twisty.textContent = view().collapsed.includes(r.id) ? "\u25b8" : "\u25be";
         twisty.dataset.toggle = r.id;
       }
-      li.append(twisty, folderIcon(r.id === ALL ? "all" : r.id === TRASH ? "trash" : "folder"));
+      li.append(twisty, icon(r.id === ALL ? "all" : r.id === TRASH ? "trash" : "folder"));
       const name = document.createElement("span");
       name.className = "name";
       name.textContent = r.name;
@@ -227,7 +240,7 @@ function renderFolders(): void {
 
 /** Rows for `notes`, with "starred" / "notes" labels when there are starred ones. */
 function withSections(notes: Note[], row: (n: Note) => HTMLElement, tag: "li" | "div"): HTMLElement[] {
-  const starred = notes.filter((n) => n.pinned);
+  const starred = notes.filter((n) => n.starred);
   if (!starred.length || view().folderId === TRASH) return notes.map(row);
   const label = (text: string) => {
     const el = document.createElement(tag);
@@ -235,7 +248,7 @@ function withSections(notes: Note[], row: (n: Note) => HTMLElement, tag: "li" | 
     el.textContent = text;
     return el;
   };
-  const rest = notes.filter((n) => !n.pinned);
+  const rest = notes.filter((n) => !n.starred);
   return [label("starred"), ...starred.map(row), ...(rest.length ? [label("notes"), ...rest.map(row)] : [])];
 }
 
@@ -246,12 +259,13 @@ function noteRow(n: Note): HTMLLIElement {
   const li = document.createElement("li");
   li.className = "note";
   li.dataset.id = n.id;
+  li.tabIndex = 0;
   li.draggable = !n.deletedAt;
   if (n.id === currentId) li.classList.add("active");
   const title = document.createElement("div");
   title.className = "title";
   title.textContent = noteTitle(n);
-  if (n.pinned) title.prepend(starIcon());
+  if (n.starred) title.prepend(starIcon());
   const meta = document.createElement("div");
   meta.className = "meta";
   const date = document.createElement("span");
@@ -268,7 +282,7 @@ function noteRow(n: Note): HTMLLIElement {
     f.title = "folder";
     const label = document.createElement("span");
     label.textContent = folderPath(n.folderId);
-    f.append(folderIcon("folder"), label);
+    f.append(icon("folder"), label);
     li.append(f);
   }
   return li;
@@ -279,11 +293,15 @@ function renderNotes(): void {
   const trashFull = view().folderId === TRASH && notes.length > 0;
   for (const el of document.querySelectorAll<HTMLElement>(".trash-foot")) el.hidden = !trashFull;
   els.notesTitle.textContent = folderName(view().folderId);
-  if (isGrid()) renderGallery(notes);
+  if (isGrid()) {
+    renderGallery(notes);
+    renderedOrder = [];
+    return; // the list is hidden in gallery view: don't build it
+  }
   if (!notes.length) {
     const li = document.createElement("li");
     li.className = "empty";
-    li.textContent = els.search.value ? "no matches" : view().folderId === TRASH ? "nothing here" : "no notes yet";
+    li.textContent = emptyText();
     els.noteList.replaceChildren(li);
     renderedOrder = [];
     return;
@@ -291,6 +309,20 @@ function renderNotes(): void {
   els.noteList.replaceChildren(...withSections(notes, noteRow, "li"));
   renderedOrder = notes.map((n) => n.id);
   els.noteList.querySelector("li.active")?.scrollIntoView({ block: "nearest" });
+}
+
+const emptyText = () => (els.search.value ? "no matches" : view().folderId === TRASH ? "nothing here" : "no notes yet");
+
+/** Move the highlight to the open note without rebuilding the list, if its order is unchanged. */
+function markActive(): boolean {
+  if (isGrid() || !renderedOrder.length) return false;
+  const order = notesInView().map((n) => n.id);
+  if (order.length !== renderedOrder.length || order.some((id, i) => id !== renderedOrder[i])) return false;
+  for (const li of els.noteList.querySelectorAll("li.note.active")) li.classList.remove("active");
+  const row = currentId ? els.noteList.querySelector<HTMLElement>(`li[data-id="${currentId}"]`) : null;
+  row?.classList.add("active");
+  row?.scrollIntoView({ block: "nearest" });
+  return true;
 }
 
 function renderStats(): void {
@@ -372,7 +404,7 @@ function openNote(id: string | null, opts: { focus?: boolean } = {}): void {
   paintLinks();
   els.page.classList.toggle("empty", !n);
   resetLiveStats();
-  renderNotes();
+  if (!markActive()) renderNotes();
   renderStats();
   saveState();
   if (isGrid()) {
@@ -420,7 +452,7 @@ function noteAction(fn: () => void, nextFrom?: Note[]): void {
 const trashNote = (n: Note) => noteAction(() => vault.trash(n), notesInView());
 const destroyNote = (n: Note) => noteAction(() => vault.destroy(n), notesInView());
 const moveNote = (n: Note, folderId: string) => noteAction(() => vault.move(n, folderId), notesInView());
-const togglePin = (n: Note) => noteAction(() => vault.togglePin(n));
+const toggleStar = (n: Note) => noteAction(() => vault.toggleStar(n));
 
 function restoreNote(n: Note): void {
   vault.restore(n);
@@ -457,7 +489,7 @@ function stepNote(dir: 1 | -1): void {
 
 async function renameNote(n: Note): Promise<void> {
   const current = n.path ? stemOf(n.path) : noteTitle(n);
-  const name = await palette.ask("rename note file", current, focusEditor);
+  const name = await palette.ask("rename note file", current, restoreFocus);
   if (!name) return;
   vault.renameNote(n, name);
   renderAll();
@@ -639,7 +671,7 @@ async function confirmClearHistory(scope: HistoryScope, since: number | null, ra
 // ---------------------------------------------------------------- folder actions
 
 async function newFolder(parent: string = ROOT): Promise<void> {
-  const name = await palette.ask(parent ? `new folder inside ${folderPath(parent)}` : "folder name", "", focusEditor);
+  const name = await palette.ask(parent ? `new folder inside ${folderPath(parent)}` : "folder name", "", restoreFocus);
   if (!name) return;
   view().collapsed = view().collapsed.filter((c) => c !== parent);
   openFolder(vault.createFolder(name, parent).id);
@@ -656,7 +688,7 @@ function toggleCollapsed(id: string): void {
 async function renameFolder(id: string): Promise<void> {
   const f = vault.folders.find((x) => x.id === id);
   if (!f || id === ROOT) return;
-  const name = await palette.ask(`rename "${f.name}"`, f.name, focusEditor);
+  const name = await palette.ask(`rename "${f.name}"`, f.name, restoreFocus);
   if (!name) return;
   const next = vault.renameFolder(id, name);
   view().folderId = swapPrefix(view().folderId, id, next);
@@ -771,7 +803,7 @@ function migrateLegacy(raw: string, freshState: boolean): number {
     const n = vault.create(folderMap.get(o.folderId) ?? ROOT, o.body);
     if (o.createdAt) n.createdAt = o.createdAt;
     if (o.deletedAt) n.deletedAt = o.deletedAt;
-    if (o.pinned && !o.deletedAt) n.pinned = true;
+    if (o.pinned && !o.deletedAt) n.starred = true; // v0.1 called stars "pinned"
     count++;
   }
   return count;
@@ -804,15 +836,17 @@ function bindResizeHandles(): void {
         settings()[key] = clampWidth(pane, startW + ev.clientX - startX);
         els.app.style.setProperty(pane === "folders" ? "--folders-size" : "--notes-size", `${settings()[key]}px`);
       };
+      const listening = new AbortController();
       const up = () => {
-        handle.removeEventListener("pointermove", move);
+        listening.abort(); // removes move, up and cancel together
         els.app.classList.remove("resizing");
         editor.refresh();
         saveState();
       };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", up, { once: true });
-      handle.addEventListener("pointercancel", up, { once: true });
+      const { signal } = listening;
+      handle.addEventListener("pointermove", move, { signal });
+      handle.addEventListener("pointerup", up, { signal });
+      handle.addEventListener("pointercancel", up, { signal });
     });
     handle.addEventListener("dblclick", () => setSetting(key, defaultSettings[key]));
   }
@@ -828,12 +862,12 @@ const ICONS = {
 };
 
 function starIcon(): SVGSVGElement {
-  const svg = folderIcon("star");
+  const svg = icon("star");
   svg.setAttribute("class", "star-icon");
   return svg;
 }
 
-function folderIcon(kind: keyof typeof ICONS): SVGSVGElement {
+function icon(kind: keyof typeof ICONS): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
   svg.setAttribute("class", "folder-icon");
@@ -842,7 +876,15 @@ function folderIcon(kind: keyof typeof ICONS): SVGSVGElement {
   return svg;
 }
 
+const narrow = matchMedia("(max-width: 760px)");
+
+/** Show / hide the folders sidebar. In a narrow window it slides over as a drawer. */
 function toggleFolders(): void {
+  if (narrow.matches) {
+    els.app.classList.toggle("drawer-open");
+    applyView();
+    return;
+  }
   setSetting("hideFolders", !settings().hideFolders);
 }
 
@@ -853,6 +895,11 @@ function applyView(): void {
   for (const b of document.querySelectorAll<HTMLElement>(".js-view")) {
     b.classList.toggle("on", b.dataset.view === settings().viewMode);
   }
+  // Whatever is hidden can't be clicked, tabbed to or typed into.
+  const foldersHidden = narrow.matches ? !els.app.classList.contains("drawer-open") : settings().hideFolders;
+  els.folders.inert = foldersHidden;
+  els.notesPane.inert = isGrid();
+  for (const el of [els.topbar, els.scroller, els.footer]) el.inert = galleryShown();
 }
 
 function setView(mode: "list" | "grid"): void {
@@ -899,7 +946,7 @@ function noteCard(n: Note): HTMLElement {
   const title = document.createElement("div");
   title.className = "card-title";
   title.textContent = noteTitle(n);
-  if (n.pinned) title.prepend(starIcon());
+  if (n.starred) title.prepend(starIcon());
   const date = document.createElement("div");
   date.className = "card-date";
   date.textContent = formatDate(n.updatedAt);
@@ -913,32 +960,50 @@ function renderGallery(notes: Note[] = notesInView()): void {
   if (!notes.length) {
     const empty = document.createElement("div");
     empty.className = "gallery-empty";
-    empty.textContent = els.search.value ? "no matches" : view().folderId === TRASH ? "nothing here" : "no notes yet";
+    empty.textContent = emptyText();
     els.galleryGrid.replaceChildren(empty);
     return;
   }
   els.galleryGrid.replaceChildren(...withSections(notes, noteCard, "div"));
 }
 
-/** Arrow keys move between cards; enter opens one. */
+/** Arrow keys move between cards (up/down to the nearest card in the next row); enter opens one. */
 function galleryKey(e: KeyboardEvent): void {
   const cards = [...els.galleryGrid.querySelectorAll<HTMLElement>(".card")];
   if (!cards.length) return;
-  const i = Math.max(0, cards.indexOf(document.activeElement as HTMLElement));
-  const top = cards[0].offsetTop;
-  const cols = Math.max(1, cards.filter((c) => c.offsetTop === top).length);
-  const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols }[e.key];
-  if (step !== undefined) {
-    e.preventDefault();
-    cards[Math.min(cards.length - 1, Math.max(0, i + step))].focus();
+  const at = Math.max(0, cards.indexOf(document.activeElement as HTMLElement));
+  const here = cards[at];
+  let next: HTMLElement | undefined;
+  if (e.key === "ArrowLeft") next = cards[at - 1];
+  else if (e.key === "ArrowRight") next = cards[at + 1];
+  else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    // rows aren't all full (the starred section has its own), so go by position
+    const down = e.key === "ArrowDown";
+    const rowTops = [...new Set(cards.map((c) => c.offsetTop))].sort((a, b) => a - b);
+    const row = rowTops.indexOf(here.offsetTop) + (down ? 1 : -1);
+    if (row >= 0 && row < rowTops.length) {
+      const inRow = cards.filter((c) => c.offsetTop === rowTops[row]);
+      next = inRow.reduce((best, c) =>
+        Math.abs(c.offsetLeft - here.offsetLeft) < Math.abs(best.offsetLeft - here.offsetLeft) ? c : best,
+      );
+    }
   } else if (e.key === "Enter" && document.activeElement?.classList.contains("card")) {
     e.preventDefault();
-    openNote(cards[i].dataset.id!);
-  }
+    openNote(here.dataset.id!);
+    return;
+  } else return;
+  e.preventDefault();
+  next?.focus();
 }
 
 function focusEditor(): void {
-  if (current()) editor.focus();
+  if (current() && !galleryShown()) editor.focus();
+}
+
+/** Put focus back where the user was: the cards in the gallery, else the editor. */
+function restoreFocus(): void {
+  if (galleryShown()) focusGallery();
+  else focusEditor();
 }
 
 // ---------------------------------------------------------------- typing stats
@@ -947,10 +1012,17 @@ function resetLiveStats(): void {
   els.app.classList.remove("typing");
 }
 
+let statsSaveTimer = 0;
 function onType(chars: number): void {
   stats.type(chars);
   if (settings().focusMode) els.app.classList.add("typing");
-  saveState();
+  // Stats change on every keystroke; save them every 10s (and on close), not each pause.
+  if (!statsSaveTimer) {
+    statsSaveTimer = window.setTimeout(() => {
+      statsSaveTimer = 0;
+      saveState();
+    }, 10_000);
+  }
 }
 
 let lastStatsKey = "";
@@ -982,16 +1054,16 @@ function renderStatsBar(): void {
     }),
   );
 }
-setInterval(() => stats && renderStatsBar(), 250);
 
 function showStats(): void {
   els.statsView.replaceChildren(renderStatsView(stats));
   els.statsView.hidden = false;
+  els.statsView.focus(); // so typing can't reach the note behind it
 }
 
 function hideStats(): void {
   els.statsView.hidden = true;
-  focusEditor();
+  restoreFocus();
 }
 
 // ---------------------------------------------------------------- links
@@ -1127,7 +1199,7 @@ function noteCommands(n: Note): Command[] {
   return [
     { label: "find in note", hint: "ctrl+f", run: () => find.open() },
     ...(linkAt(n.body, editor.ta.selectionStart) ? [{ label: "follow link", hint: "ctrl+enter", run: () => void followLinkAtCaret() }] : []),
-    { label: n.pinned ? "unstar note" : "star note", hint: "keeps it at the top", run: () => togglePin(n) },
+    { label: n.starred ? "unstar note" : "star note", hint: "keeps it at the top", run: () => toggleStar(n) },
     { label: "rename note", hint: "file name", run: () => void renameNote(n) },
     {
       label: "move note to",
@@ -1352,7 +1424,7 @@ function rootMenu(): Menu {
 }
 
 function openPalette(menu: Menu = rootMenu()): void {
-  palette.open(menu, focusEditor);
+  palette.open(menu, restoreFocus);
 }
 
 // ---------------------------------------------------------------- events
@@ -1415,7 +1487,11 @@ function bindEvents(): void {
       galleryKey(e);
     } else if (mod(e) && k === "f") {
       e.preventDefault();
-      if (current()) find.open();
+      // in the gallery, ctrl+f searches the cards (there's no note open to search in)
+      if (galleryShown()) {
+        els.gallerySearch.focus();
+        els.gallerySearch.select();
+      } else if (current()) find.open();
     } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault();
       stepNote(e.key === "ArrowUp" ? -1 : 1);
@@ -1439,11 +1515,25 @@ function bindEvents(): void {
 
   const rowId = (e: Event) => (e.target as HTMLElement).closest<HTMLElement>("li[data-id]")?.dataset.id;
 
+  // rows work from the keyboard too: enter or space opens them
+  for (const list of [els.folderList, els.noteList]) {
+    list.addEventListener("keydown", (e) => {
+      if ((e.key === "Enter" || e.key === " ") && (e.target as HTMLElement).matches("li[data-id]")) {
+        e.preventDefault();
+        (e.target as HTMLElement).click();
+      }
+    });
+  }
+
   els.folderList.addEventListener("click", (e) => {
     const toggle = (e.target as HTMLElement).closest<HTMLElement>("[data-toggle]");
     if (toggle) return toggleCollapsed(toggle.dataset.toggle!);
     const id = rowId(e);
     if (id !== undefined) openFolder(id);
+    if (els.app.classList.contains("drawer-open")) {
+      els.app.classList.remove("drawer-open");
+      applyView();
+    }
   });
   els.folderList.addEventListener("dblclick", (e) => {
     const id = rowId(e);
@@ -1683,6 +1773,9 @@ async function main(): Promise<void> {
   }
   state = normalizeState(parsed);
   stats = new TypingStats(state.stats);
+  setInterval(() => {
+    if (!document.hidden) renderStatsBar();
+  }, 250);
 
   try {
     await openVault();

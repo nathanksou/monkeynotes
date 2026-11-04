@@ -16,9 +16,22 @@
  * changes; files that came from elsewhere keep whatever name they had.
  */
 import type { Backend, ExtDir, ExtFile, FileEntry, Scan } from "./backend";
-import { isExists } from "./errors";
+import { isExists, isNotFound } from "./errors";
 import { baseOf, dirOf, extOf, join, stemOf, swapPrefix } from "./paths";
 import { type Folder, META_FILE, type Note, ROOT, TRASH_DIR, TRASH_TTL_MS, titleLine, uid } from "./model";
+
+interface TrashEntry {
+  /** folder it was in */
+  from: string;
+  deletedAt: number;
+  /** its file name (without extension) before it was trashed, for restoring */
+  name?: string;
+  /** text length when trashed: a different file with the same name isn't ours */
+  size?: number;
+}
+
+/** Folders can be nested this deep (the Rust scan reads no deeper). */
+export const MAX_FOLDER_DEPTH = 8;
 
 interface Meta {
   /** Starred notes by path ("pinned" for compatibility with older files). */
@@ -26,7 +39,7 @@ interface Meta {
   /** Starred folder ids. */
   starredFolders?: string[];
   /** Keyed by file name inside .trash/. */
-  trash?: Record<string, { from: string; deletedAt: number }>;
+  trash?: Record<string, TrashEntry>;
 }
 
 const FORBIDDEN = /[\\/:*?"<>|\u0000-\u001f]/g;
@@ -88,6 +101,8 @@ export class Vault {
   now: () => number = () => Date.now();
   /** Called when a folder rename fails on disk and is undone (old id, new id). */
   onFolderRenameReverted: (from: string, to: string) => void = () => {};
+  /** File name a trashed note had before, so restoring puts it back as it was. */
+  private originalName = new WeakMap<Note, string>();
   /** Requested file names for imported notes that haven't been written yet. */
   private nameHints = new WeakMap<Note, string>();
 
@@ -110,6 +125,21 @@ export class Vault {
       this.destroy(n);
     }
     this.lastMeta = JSON.stringify(this.buildMeta());
+    if (this.metaIsStale(meta)) {
+      this.metaDirty = true;
+      this.schedule();
+    }
+  }
+
+  /** The metadata file mentions notes or folders that aren't there any more. */
+  private metaIsStale(meta: Meta): boolean {
+    const paths = new Set(this.notes.filter((n) => n.path).map((n) => n.path));
+    const ours = new Set(this.notes.filter((n) => n.deletedAt && !n.foreignTrash && n.path).map((n) => baseOf(n.path)));
+    return (
+      (meta.pinned ?? []).some((p) => !paths.has(p)) ||
+      Object.keys(meta.trash ?? {}).some((name) => !ours.has(name)) ||
+      (meta.starredFolders ?? []).some((id) => !this.folders.some((f) => f.id === id))
+    );
   }
 
   /**
@@ -160,6 +190,7 @@ export class Vault {
     // Files that disappeared; notes not yet on disk, failing to save or just edited stay.
     this.notes = this.notes.filter((n) => !n.path || seen.has(n) || this.dirty.has(n) || editedSince(n));
     this.rememberTimes(scan);
+    if (this.metaIsStale(meta)) this.metaDirty = true;
     return openChanged;
   }
 
@@ -169,7 +200,10 @@ export class Vault {
 
   private fromFile(f: FileEntry, body: string, meta: Meta, pinned: Set<string>): Note {
     const inTrash = dirOf(f.path) === TRASH_DIR;
-    const t = inTrash ? meta.trash?.[baseOf(f.path)] : undefined;
+    const entry = inTrash ? meta.trash?.[baseOf(f.path)] : undefined;
+    // An entry for a file of a different size is stale (another app's trash
+    // file that happens to have the same name): not ours, never auto-purged.
+    const t = entry && (entry.size === undefined || entry.size === body.length) ? entry : undefined;
     const note: Note = {
       id: uid(),
       path: f.path,
@@ -177,12 +211,13 @@ export class Vault {
       body,
       createdAt: f.created,
       updatedAt: f.modified,
-      pinned: pinned.has(f.path) || undefined,
+      starred: pinned.has(f.path) || undefined,
       deletedAt: inTrash ? (t?.deletedAt ?? f.modified) : undefined,
       foreignTrash: inTrash && !t ? true : undefined,
       autoName: this.followsTitle(f.path, body),
     };
     this.savedBody.set(note, body);
+    if (t?.name) this.originalName.set(note, t.name);
     return note;
   }
 
@@ -259,7 +294,7 @@ export class Vault {
       for (const n of pending) this.saveNote(n);
       if (this.metaDirty) {
         this.metaDirty = false;
-        this.run("save metadata", () => this.writeMeta());
+        this.run("save metadata", () => this.writeMeta(), () => (this.metaDirty = true));
       }
       const q = this.queue;
       await q;
@@ -325,12 +360,25 @@ export class Vault {
       try {
         if (!from) {
           await this.be.write(target, body, true);
-        } else {
-          if (from !== target) {
+          await this.dropStaleHistory(target);
+        } else if (from !== target) {
+          let moved = true;
+          try {
             await this.be.rename(from, target);
-            this.movedTo(n, target);
-            await this.be.historyMove(from, target, false).catch((e) => this.onError(`moving history failed: ${e}`));
+          } catch (e) {
+            // The file vanished (deleted by another app): write the text fresh.
+            if (!isNotFound(e)) throw e;
+            await this.be.write(target, body, true);
+            moved = false;
           }
+          this.movedTo(n, target);
+          if (from.toLowerCase() !== target.toLowerCase()) await this.dropStaleHistory(target);
+          await this.be.historyMove(from, target, false).catch((e) => this.onError(`moving history failed: ${e}`));
+          if (moved) {
+            await this.snapshot(n, target);
+            await this.be.write(target, body, false);
+          }
+        } else {
           await this.snapshot(n, target);
           await this.be.write(target, body, false);
         }
@@ -345,6 +393,11 @@ export class Vault {
         this.occupied.add(target.toLowerCase());
       }
     }
+  }
+
+  /** History left at a path by a file that's gone isn't this note's: drop it. */
+  private async dropStaleHistory(path: string): Promise<void> {
+    await this.be.historyDelete(path).catch((e) => this.onError(`clearing old history failed: ${e}`));
   }
 
   /**
@@ -367,7 +420,7 @@ export class Vault {
 
   private movedTo(n: Note, path: string): void {
     if (n.path === path) return;
-    if (n.pinned || n.deletedAt) {
+    if (n.starred || n.deletedAt) {
       // flush() picks this up before it returns; the timer covers saves made outside a flush
       this.metaDirty = true;
       this.schedule();
@@ -378,10 +431,13 @@ export class Vault {
   private buildMeta(): Meta {
     const trash: Meta["trash"] = {};
     for (const n of this.notes) {
-      if (n.deletedAt && n.path && !n.foreignTrash) trash[baseOf(n.path)] = { from: n.folderId, deletedAt: n.deletedAt };
+      if (n.deletedAt && n.path && !n.foreignTrash) {
+        const name = this.originalName.get(n);
+        trash[baseOf(n.path)] = { from: n.folderId, deletedAt: n.deletedAt, ...(name ? { name } : {}), size: n.body.length };
+      }
     }
     return {
-      pinned: this.notes.filter((n) => n.pinned && n.path).map((n) => n.path),
+      pinned: this.notes.filter((n) => n.starred && n.path).map((n) => n.path),
       starredFolders: [...this.starredFolders].sort(),
       trash,
     };
@@ -447,8 +503,8 @@ export class Vault {
     this.touch(n);
   }
 
-  togglePin(n: Note): void {
-    n.pinned = !n.pinned || undefined;
+  toggleStar(n: Note): void {
+    n.starred = !n.starred || undefined;
     this.metaDirty = true;
     this.schedule();
   }
@@ -462,8 +518,9 @@ export class Vault {
 
   trash(n: Note): void {
     if (this.discardIfBlank(n)) return;
+    if (n.path) this.originalName.set(n, stemOf(n.path));
     n.deletedAt = Date.now();
-    n.pinned = undefined;
+    n.starred = undefined;
     this.metaDirty = true;
     this.touch(n);
   }
@@ -473,6 +530,10 @@ export class Vault {
     n.deletedAt = undefined;
     n.foreignTrash = undefined;
     if (!this.folders.some((f) => f.id === n.folderId)) n.folderId = ROOT;
+    // back under its old file name (not "x 2", which it may have had in the trash)
+    const name = this.originalName.get(n);
+    if (name !== undefined && !n.autoName) this.nameHints.set(n, name);
+    this.originalName.delete(n);
     this.metaDirty = true;
     this.touch(n);
   }
@@ -547,7 +608,11 @@ export class Vault {
     }
   }
 
+  /** Throws if the new folder would be nested deeper than MAX_FOLDER_DEPTH. */
   createFolder(name: string, parent: string = ROOT): Folder {
+    if (parent && parent.split("/").length >= MAX_FOLDER_DEPTH) {
+      throw new Error(`folders can be nested ${MAX_FOLDER_DEPTH} deep at most`);
+    }
     const id = this.uniqueFolder(parent, safeName(name, "folder"));
     const f = { id, name: baseOf(id) };
     this.folders = sortFolders([...this.folders, f]);
@@ -578,7 +643,9 @@ export class Vault {
         await this.be.rename(id, next);
         done();
         await this.be.historyMove(id, next, true).catch((e) => this.onError(`moving history failed: ${e}`));
-        for (const n of this.notes) if (n.path && !n.deletedAt) n.path = swapPrefix(n.path, id, next);
+        // every note still on disk under the old name, including ones trashed
+        // but not yet moved (paths already in .trash/ never match)
+        for (const n of this.notes) if (n.path) n.path = swapPrefix(n.path, id, next);
         this.metaDirty = true;
       },
       () => {
@@ -595,7 +662,8 @@ export class Vault {
   deleteFolder(id: string): void {
     if (id === ROOT) return;
     const ids = this.subtree(id);
-    for (const n of this.notes.filter((x) => ids.includes(x.folderId))) {
+    const affected = this.notes.filter((x) => ids.includes(x.folderId));
+    for (const n of affected) {
       if (!n.deletedAt) this.trash(n);
       n.folderId = ROOT;
     }
@@ -603,18 +671,21 @@ export class Vault {
     for (const x of ids) this.starredFolders.delete(x);
     this.metaDirty = true;
     this.pendingDeletes.add(id);
-    // deepest first, so parents are empty by the time we reach them
+    // Queue the moves to the trash now, then the folder removals behind them
+    // (deepest first, so parents are empty by the time we reach them). A folder
+    // recreated with the same name in the meantime is left alone.
+    for (const n of affected) if (this.dirty.delete(n)) this.saveNote(n);
     const order = [...ids].sort((a, b) => b.split("/").length - a.split("/").length);
-    void this.flush().then(() => {
-      for (const dir of order) {
-        this.run("remove folder", () =>
-          this.be.rmdir(dir).catch(() => {
-            /* folder still holds non-note files; leave it */
-          }),
-        );
-      }
-      this.run("remove folder", async () => void this.pendingDeletes.delete(id));
-    });
+    for (const dir of order) {
+      this.run("remove folder", async () => {
+        if (this.pendingCreates.has(dir) || this.folders.some((f) => f.id === dir)) return;
+        await this.be.rmdir(dir).catch(() => {
+          /* folder still holds non-note files; leave it */
+        });
+      });
+    }
+    this.run("remove folder", async () => void this.pendingDeletes.delete(id));
+    this.schedule();
   }
 
   // ---------------------------------------------------------------- import
@@ -625,7 +696,11 @@ export class Vault {
 
   /** Import a folder tree as a new folder inside `parent`. */
   importDir(dir: ExtDir, parent: string = ROOT): { folder: Folder; count: number } {
-    const folder = this.createFolder(dir.name || "imported", parent);
+    // past the nesting limit, the notes go into the deepest folder allowed
+    const folder =
+      parent && parent.split("/").length >= MAX_FOLDER_DEPTH
+        ? { id: parent, name: baseOf(parent) }
+        : this.createFolder(dir.name || "imported", parent);
     let count = this.importFiles(folder.id, dir.files).length;
     for (const sub of dir.dirs) count += this.importDir(sub, folder.id).count;
     return { folder, count };

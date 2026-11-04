@@ -87,7 +87,7 @@ export class MemoryBackend implements Backend {
     }
     if (this.files.has(to)) throw `EEXIST: ${to}`;
     const f = this.files.get(from);
-    if (!f) throw `${from} missing`;
+    if (!f) throw `NOT_FOUND: ${from}`;
     this.files.delete(from);
     this.files.set(to, f);
   }

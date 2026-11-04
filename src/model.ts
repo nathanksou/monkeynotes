@@ -15,7 +15,8 @@ export interface Note {
   body: string;
   createdAt: number;
   updatedAt: number;
-  pinned?: boolean;
+  /** Starred notes stay at the top (stored as "pinned" in .monkeynotes.json). */
+  starred?: boolean;
   /** Set when the note is in the trash. folderId is where it came from. */
   deletedAt?: number;
   /** In .trash/ but not put there by this app (e.g. Obsidian's trash): never auto-purged. */
@@ -121,6 +122,7 @@ alt+up / down     previous / next note
 ctrl+= / ctrl+-   font size
 
 ctrl+f            find in this note
+ctrl+shift+f      search all notes
 ctrl+enter        follow the [[link]] under the caret (or ctrl+click it)
 
 drag notes onto folders to move them. right-click a note or folder for more.
@@ -149,9 +151,31 @@ export function normalizeState(raw: unknown): AppState {
   };
 }
 
+/** The first non-empty line, without a leading "#" heading marker. Stops reading at that line. */
 export function titleLine(body: string): string {
-  const line = body.split("\n").find((l) => l.trim() !== "") ?? "";
-  return line.replace(/^#+\s*/, "").trim();
+  let start = 0;
+  while (start <= body.length) {
+    const end = body.indexOf("\n", start);
+    const line = body.slice(start, end === -1 ? undefined : end);
+    if (line.trim() !== "") return line.replace(/^#+\s*/, "").trim();
+    if (end === -1) break;
+    start = end + 1;
+  }
+  return "";
+}
+
+/** The first `count` non-empty lines, reading no further than needed. */
+function firstLines(body: string, count: number): string[] {
+  const out: string[] = [];
+  let start = 0;
+  while (out.length < count && start <= body.length) {
+    const end = body.indexOf("\n", start);
+    const line = body.slice(start, end === -1 ? undefined : end);
+    if (line.trim() !== "") out.push(line);
+    if (end === -1) break;
+    start = end + 1;
+  }
+  return out;
 }
 
 let titleSource: TitleSource = "first line";
@@ -165,20 +189,31 @@ export function noteTitle(n: Note): string {
 }
 
 export function notePreview(n: Note): string {
-  const lines = n.body.split("\n").filter((l) => l.trim() !== "");
+  const lines = firstLines(n.body, 2);
   // In file-name mode the first line isn't the title, so it is the preview,
   // unless it just repeats the title as a heading.
   const skip = titleSource === "file name" && n.path ? (titleLine(lines[0] ?? "") === noteTitle(n) ? 1 : 0) : 1;
   return (lines[skip] ?? "").trim().slice(0, 120);
 }
 
+/** Words (runs of non-space), counted without building a list of them. */
 export function wordCount(s: string): number {
-  const m = s.match(/\S+/g);
-  return m ? m.length : 0;
+  let count = 0;
+  let inWord = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    const space = c === 32 || (c >= 9 && c <= 13) || c === 160 || c === 0x2028 || c === 0x2029 || c === 0xfeff;
+    if (space) inWord = false;
+    else if (!inWord) {
+      inWord = true;
+      count++;
+    }
+  }
+  return count;
 }
 
 export function sortNotes(a: Note, b: Note): number {
-  if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+  if (!!a.starred !== !!b.starred) return a.starred ? -1 : 1;
   return b.updatedAt - a.updatedAt;
 }
 

@@ -164,14 +164,14 @@ describe("nested folders", () => {
 describe("pins", () => {
   it("survive a rename via the metadata file", async () => {
     const { be, v } = await open({ "a.md": "a" });
-    v.togglePin(v.notes[0]);
+    v.toggleStar(v.notes[0]);
     v.setBody(v.notes[0], "b");
     await v.flush();
     const meta = JSON.parse(be.files.get(".monkeynotes.json")!.body);
     expect(meta.pinned).toEqual(["b.md"]);
     const again = new Vault(be);
     await again.load();
-    expect(again.notes[0].pinned).toBe(true);
+    expect(again.notes[0].starred).toBe(true);
   });
 });
 
@@ -319,7 +319,7 @@ describe("metadata after the last save", () => {
   it("records a pinned note's new name even when the rename is the final write", async () => {
     const { be, v } = await open({ "old.md": "old" });
     const n = v.notes[0];
-    v.togglePin(n);
+    v.toggleStar(n);
     await v.flush();
     v.setBody(n, "new title\nbody");
     await v.flush(); // e.g. the window closing right after typing
@@ -469,5 +469,99 @@ describe("clearing version history", () => {
     const { be, v } = await withHistory();
     expect(await v.clearHistory(null, null)).toBe(9);
     expect(be.history).toEqual({});
+  });
+});
+
+describe("review regressions", () => {
+  async function quiet(seed: Record<string, string>) {
+    const o = await open(seed);
+    const errors: string[] = [];
+    o.v.onError = (m) => errors.push(m);
+    return { ...o, errors };
+  }
+
+  it("a note trashed and then its folder renamed, before saving, still reaches the trash", async () => {
+    const { be, v } = await quiet({ "a/x.md": "x\nbody" });
+    v.trash(v.notes[0]);
+    v.renameFolder("a", "b");
+    await v.flush();
+    expect(be.paths()).toEqual([".trash/x.md"]);
+  });
+
+  it("saves a retitled note whose file was deleted by another app", async () => {
+    const { be, v } = await quiet({ "ideas.md": "ideas\nold" });
+    const n = v.notes[0];
+    be.files.delete("ideas.md");
+    v.setBody(n, "plans\nnew text");
+    await v.flush();
+    expect(be.files.get("plans.md")?.body).toBe("plans\nnew text");
+  });
+
+  it("drops stale trash entries, so another app's same-named trash file is never purged", async () => {
+    const { be, v } = await quiet({ "a.md": "a\nmine" });
+    v.trash(v.notes[0]);
+    await v.flush();
+    const meta = JSON.parse(be.files.get(".monkeynotes.json")!.body);
+    meta.trash["a.md"].deletedAt = Date.now() - TRASH_TTL_MS - 86_400_000;
+    be.put(".monkeynotes.json", JSON.stringify(meta));
+    be.files.delete(".trash/a.md"); // emptied by another app
+    await v.reload(null);
+    await v.flush();
+    be.put(".trash/a.md", "another app's note");
+    const again = new Vault(be);
+    await again.load();
+    await again.flush();
+    expect(be.paths()).toEqual([".trash/a.md"]);
+  });
+
+  it("retries a metadata write that failed", async () => {
+    const { be, v } = await quiet({ "a.md": "a" });
+    be.failWrites.add(".monkeynotes.json");
+    v.toggleStar(v.notes[0]);
+    await v.flush();
+    v.setBody(v.notes[0], "a\nmore");
+    await v.flush();
+    expect(be.files.get(".monkeynotes.json")?.body).toContain("a.md");
+  });
+
+  it("a new note never inherits a deleted note's history at the same path", async () => {
+    const { be, v } = await quiet({ "ideas.md": "ideas\nv1" });
+    const n = v.notes[0];
+    v.setBody(n, "ideas\nv2");
+    await v.flush();
+    expect(await v.versions(n)).toHaveLength(1);
+    be.files.delete("ideas.md");
+    await v.reload(null);
+    const fresh = v.create("");
+    v.setBody(fresh, "ideas\nbrand new");
+    await v.flush();
+    expect(await v.versions(fresh)).toEqual([]);
+  });
+
+  it("restoring puts a note back under its original file name", async () => {
+    const { be, v } = await quiet({ "a/2026-11-03.md": "standup", "b/2026-11-03.md": "retro" });
+    const [x, y] = v.notes;
+    v.trash(x);
+    await v.flush();
+    v.trash(y);
+    await v.flush();
+    v.restore(y);
+    await v.flush();
+    expect(be.paths()).toContain("b/2026-11-03.md");
+  });
+
+  it("deleting a folder and recreating it right away keeps the new one", async () => {
+    const { be, v } = await quiet({ "a/x.md": "x" });
+    v.deleteFolder("a");
+    v.createFolder("a");
+    await v.flush();
+    expect([...be.dirs]).toContain("a");
+  });
+
+  it("won't nest folders deeper than the app can read back", async () => {
+    const { v } = await quiet({});
+    let parent = "";
+    for (let i = 0; i < 8; i++) parent = v.createFolder(`l${i}`, parent).id;
+    expect(() => v.createFolder("too deep", parent)).toThrow(/8 deep/);
   });
 });

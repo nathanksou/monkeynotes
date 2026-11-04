@@ -118,10 +118,7 @@ class TauriBackend implements Backend {
   importDir = () => invoke<ExtDir | null>("import_dir");
   exportNote = (name: string, contents: string) => invoke<boolean>("export_note", { name, contents });
   exportAll = (files: { path: string; body: string }[]) =>
-    invoke<string | null>("export_all", {
-      folderName: `monkeynotes-export-${new Date().toISOString().slice(0, 10)}`,
-      files,
-    });
+    invoke<string | null>("export_all", { date: new Date().toISOString().slice(0, 10), files });
 }
 
 // ------------------------------------------------------------------ choosing one

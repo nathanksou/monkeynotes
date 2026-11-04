@@ -89,16 +89,6 @@ export class Editor {
     return this.caret;
   }
 
-  get value(): string {
-    return this.ta.value;
-  }
-
-  /** The note's paragraphs as of the last measurement (shared with other layers). */
-  get paragraphs(): string[] {
-    return this.paras;
-  }
-
-  /** Replace the content (e.g. switching notes). Resets undo history. */
   /**
    * Replace the content (e.g. switching notes). Resets undo history. The caret
    * goes to `caretAt`: the start (default), the end, or a text position.

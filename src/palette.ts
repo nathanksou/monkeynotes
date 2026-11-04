@@ -49,7 +49,9 @@ export class Palette {
     });
     this.input.addEventListener("keydown", (e) => this.onKey(e));
     root.addEventListener("mousedown", (e) => {
-      if (e.target === root) this.cancelAll();
+      if (e.target === root) return this.cancelAll();
+      // clicking a row mustn't take focus from the input, or the keyboard stops working
+      if (e.target !== this.input) e.preventDefault();
     });
     this.list.addEventListener("mousemove", (e) => {
       const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-i]");
@@ -188,7 +190,8 @@ export class Palette {
     if (q) {
       // Exact substring matches first, then looser in-order matches.
       const exact = menu.items.filter((c) => c.label.toLowerCase().includes(q));
-      const loose = menu.items.filter((c) => !exact.includes(c) && fuzzy(c.label.toLowerCase(), q));
+      const exactSet = new Set(exact);
+      const loose = menu.items.filter((c) => !exactSet.has(c) && fuzzy(c.label.toLowerCase(), q));
       this.filtered = [...exact, ...loose];
     } else {
       this.filtered = menu.items;

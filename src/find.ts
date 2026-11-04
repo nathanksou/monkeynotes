@@ -66,9 +66,13 @@ export class Find {
     this.editor.focus();
   }
 
-  /** Re-run the search after the note's text changed. */
+  private refreshTimer = 0;
+
+  /** Re-run the search after the note's text changed (debounced while typing). */
   refresh(): void {
-    if (this.isOpen) this.search(false);
+    if (!this.isOpen) return;
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = window.setTimeout(() => this.search(false), 80);
   }
 
   private search(jump: boolean): void {
