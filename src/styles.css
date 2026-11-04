@@ -82,6 +82,7 @@ kbd {
 /* ------------------------------------------------------------ layout */
 
 #app {
+  position: relative;
   display: grid;
   grid-template-rows: 3.25rem minmax(0, 1fr);
   height: 100vh;
@@ -503,18 +504,18 @@ kbd {
   color: var(--sub);
   flex: none;
   white-space: nowrap;
-  /* when the note info and the stats don't fit on one line, stack them rather than cut text */
+  /* one flowing line: note info and stats wrap onto more lines as the window narrows */
   flex-wrap: wrap;
-  row-gap: 0.35rem;
+  justify-content: flex-start;
+  gap: 0.3rem 1.1rem;
 }
 
 #note-meta {
-  flex: none;
+  flex: 0 1 auto;
+  white-space: normal; /* very narrow windows: wrap rather than cut it off */
+  min-width: 0;
 }
 
-#statsbar {
-  margin-left: auto;
-}
 
 
 /* focus mode: chrome fades away while you type, comes back on mouse move */
@@ -724,12 +725,14 @@ kbd {
 
 /* ------------------------------------------------------------ stats bar */
 
+/* the stats join the footer's own flow instead of forming a second block */
 #statsbar {
-  display: flex;
-  gap: 1.1rem;
-  flex: none;
-  cursor: pointer;
+  display: contents;
   font-variant-numeric: tabular-nums;
+}
+
+#statsbar .stat {
+  cursor: pointer;
 }
 
 #statsbar b {
@@ -753,12 +756,6 @@ kbd {
 #app.typing #note-meta {
   opacity: 0;
   transition: opacity 300ms;
-}
-
-@media (max-width: 1000px) {
-  #statsbar .stat:nth-child(n + 4) {
-    display: none;
-  }
 }
 
 /* ------------------------------------------------------------ stats view */
@@ -1184,15 +1181,35 @@ kbd {
 
 /* ------------------------------------------------------------ resizable sidebars */
 
+/* The handles sit on the #app grid, centred on the column borders, so the whole
+   7px grab area is usable (inside a pane it would be clipped to its left half). */
 .resize-handle {
   position: absolute;
-  top: 0;
-  right: -3px;
+  top: 3.25rem; /* below the toolbar */
   bottom: 0;
   z-index: 3;
   width: 7px;
   cursor: col-resize;
   touch-action: none;
+}
+
+.resize-handle[data-pane="folders"] {
+  left: calc(var(--folders-w) - 3px);
+}
+
+.resize-handle[data-pane="notes"] {
+  left: calc(var(--folders-w) + var(--notes-w) - 3px);
+}
+
+#app.hide-folders .resize-handle[data-pane="folders"],
+#app.grid .resize-handle[data-pane="notes"] {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .resize-handle[data-pane="folders"] {
+    display: none;
+  }
 }
 
 .resize-handle::after {
@@ -1206,8 +1223,9 @@ kbd {
   transition: background var(--speed);
 }
 
+/* only the handle under the pointer, or being dragged, lights up */
 .resize-handle:hover::after,
-#app.resizing .resize-handle::after {
+.resize-handle.dragging::after {
   background: var(--main);
 }
 

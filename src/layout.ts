@@ -24,6 +24,7 @@ export function bindResizeHandles(): void {
       const startX = e.clientX;
       const startW = settings()[key];
       els.app.classList.add("resizing");
+      handle.classList.add("dragging");
       const move = (ev: PointerEvent) => {
         settings()[key] = clampWidth(pane, startW + ev.clientX - startX);
         els.app.style.setProperty(pane === "folders" ? "--folders-size" : "--notes-size", `${settings()[key]}px`);
@@ -32,6 +33,7 @@ export function bindResizeHandles(): void {
       const up = () => {
         listening.abort(); // removes move, up and cancel together
         els.app.classList.remove("resizing");
+        handle.classList.remove("dragging");
         app.editor.refresh();
         saveState();
       };
