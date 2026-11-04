@@ -396,7 +396,7 @@ kbd {
 #page {
   max-width: min(var(--line-width), 100%);
   margin: 0 auto;
-  padding: 1.5rem 2rem 45vh 2.5rem; /* the left margin holds the back button */
+  padding: 1.5rem 2rem 1.5rem 2.5rem; /* the left margin holds the back button */
   min-height: 100%;
   cursor: text;
 }
