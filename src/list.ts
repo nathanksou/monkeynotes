@@ -202,6 +202,8 @@ export function renderStats(): void {
 /** The toolbar's star and history buttons follow the open note. */
 function updateNoteButtons(n: Note | undefined): void {
   const usable = !!n && !n.deletedAt;
+  const title = document.getElementById("note-title");
+  if (title) title.textContent = n ? noteTitle(n) : "";
   const star = document.getElementById("star-note") as HTMLButtonElement | null;
   if (star) {
     star.disabled = !usable;

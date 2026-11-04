@@ -643,7 +643,7 @@ kbd {
 
 #find {
   position: absolute;
-  top: 0.6rem;
+  top: calc(3.25rem + 0.6rem); /* below the note title bar */
   right: 4.5rem;
   z-index: 5;
   display: flex;
@@ -1048,7 +1048,7 @@ kbd {
   opacity: 0.8;
 }
 
-/* back button, shown in the toolbar while a note is open from the gallery */
+/* back button, in the note's own title bar while a note is open from the gallery */
 #back-to-gallery {
   display: none;
 }
@@ -1425,4 +1425,26 @@ kbd {
 .icon:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/* the note's own title bar: back (gallery), title, star */
+#note-head {
+  padding: 0 1rem;
+  justify-content: flex-start;
+  color: var(--text);
+}
+
+#note-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#note-head .icon {
+  flex: none;
+}
+
+#note-head #star-note {
+  margin-left: auto;
 }

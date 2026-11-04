@@ -21,6 +21,7 @@ export const els = {
   folders: $("#folders"),
   notesPane: $("#notes"),
   footer: $("#footer"),
+  noteHead: $("#note-head"),
   gallery: $("#gallery"),
   galleryGrid: $("#gallery-grid"),
   galleryTitle: $("#gallery-title"),
