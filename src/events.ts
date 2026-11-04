@@ -270,7 +270,7 @@ export function bindEvents(): void {
     toastAction?.();
     els.toast.hidden = true;
   });
-  els.statsBar.addEventListener("click", showStats);
+  $("#open-stats").addEventListener("click", showStats);
   els.statsView.addEventListener("mousedown", (e) => {
     if (e.target === els.statsView) hideStats();
   });

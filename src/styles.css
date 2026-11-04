@@ -745,9 +745,7 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
-#statsbar .stat {
-  cursor: pointer;
-}
+
 
 #statsbar b {
   color: var(--text);
@@ -1574,4 +1572,9 @@ kbd {
 
 .os-thumb.on {
   opacity: 0.6;
+}
+
+/* the stats icon sits right next to "avg wpm" */
+#open-stats {
+  margin-left: -0.7rem;
 }
