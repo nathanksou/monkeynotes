@@ -1346,3 +1346,12 @@ kbd {
     display: none;
   }
 }
+
+/* the folders toggle shows "collapse" while the sidebar is open and "open" while it is hidden */
+#sidebar-toggle .ico-expand,
+#sidebar-toggle.closed .ico-collapse {
+  display: none;
+}
+#sidebar-toggle.closed .ico-expand {
+  display: block;
+}

@@ -90,6 +90,14 @@ export function applyView(): void {
   // Whatever is hidden can't be clicked, tabbed to or typed into.
   const foldersHidden = narrow.matches ? !els.app.classList.contains("drawer-open") : settings().hideFolders;
   els.folders.inert = foldersHidden;
+  const toggle = document.getElementById("sidebar-toggle");
+  if (toggle) {
+    toggle.classList.toggle("closed", foldersHidden);
+    toggle.setAttribute("aria-expanded", String(!foldersHidden));
+    const label = foldersHidden ? "show folders" : "hide folders";
+    toggle.setAttribute("aria-label", label);
+    toggle.title = `${label} (ctrl+\\)`;
+  }
   els.notesPane.inert = isGrid();
   for (const el of [els.scroller, els.footer]) el.inert = galleryShown();
 }
