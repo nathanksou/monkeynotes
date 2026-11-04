@@ -240,15 +240,20 @@ kbd {
 
 /* ------------------------------------------------------------ toolbar */
 
-/* one row across the window: everything sits on the left, except the settings gear */
+/* one row across the window: controls on the left, search in the centre, settings gear on the right */
 #toolbar {
   grid-column: 1 / -1;
-  display: flex;
+  display: grid;
+  /* equal side columns keep the search box centred in the window */
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 1rem;
   padding: 0 0.75rem;
   border-bottom: 1px solid var(--sub-alt);
+}
+
+#open-palette {
+  justify-self: end;
 }
 
 .toolbar-left {
@@ -259,8 +264,7 @@ kbd {
 }
 
 #search {
-  width: min(260px, 32vw);
-  margin-left: 0.4rem;
+  width: min(340px, 36vw);
   background: var(--sub-alt);
   border: 0;
   outline: 0;
