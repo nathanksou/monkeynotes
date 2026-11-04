@@ -1243,3 +1243,22 @@ kbd {
   cursor: col-resize;
   user-select: none;
 }
+
+/* "in folder ..." line on notes in the all notes list */
+.note .folder-tag {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.note .folder-tag .folder-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-right: 0.35rem;
+}
+
+.note .folder-tag span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

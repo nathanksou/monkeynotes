@@ -201,7 +201,10 @@ function noteRow(n: Note): HTMLLIElement {
   if (view().folderId === ALL) {
     const f = document.createElement("div");
     f.className = "folder-tag";
-    f.textContent = folderPath(n.folderId);
+    f.title = "folder";
+    const label = document.createElement("span");
+    label.textContent = folderPath(n.folderId);
+    f.append(folderIcon("folder"), label);
     li.append(f);
   }
   return li;
