@@ -132,6 +132,19 @@ export class MemoryBackend implements Backend {
     }
     
   }
+  async historyClear(paths: string[] | null, since: number | null, dryRun: boolean) {
+    let removed = 0;
+    for (const [path, versions] of Object.entries(this.history)) {
+      if (paths && !paths.includes(path)) continue;
+      for (const at of Object.keys(versions).map(Number)) {
+        if (since !== null && at < since) continue;
+        removed++;
+        if (!dryRun) delete versions[at];
+      }
+      if (!dryRun && !Object.keys(versions).length) delete this.history[path];
+    }
+    return removed;
+  }
   async historyDelete(path: string) {
     delete this.history[path];
     

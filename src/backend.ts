@@ -65,6 +65,12 @@ export interface Backend {
   /** Move history after a note (or, with `folder`, a folder) was renamed. */
   historyMove(from: string, to: string, folder: boolean): Promise<void>;
   historyDelete(path: string): Promise<void>;
+  /**
+   * Remove versions saved at or after `since` (all when null) for these notes,
+   * or for every note when `paths` is null. Returns how many; with `dryRun`,
+   * only counts.
+   */
+  historyClear(paths: string[] | null, since: number | null, dryRun: boolean): Promise<number>;
 
   /** Ask the user for note files to import. Null if cancelled. */
   importFiles(): Promise<ExtFile[] | null>;
@@ -103,6 +109,10 @@ class TauriBackend implements Backend {
   historyRead = (path: string, at: number) => invoke<string>("history_read", { path, at });
   historyMove = (from: string, to: string, folder: boolean) => invoke<void>("history_move", { from, to, folder });
   historyDelete = (path: string) => invoke<void>("history_delete", { path });
+  historyClear = (paths: string[] | null, since: number | null, dryRun: boolean) =>
+    paths === null
+      ? invoke<number>("history_clear_all", { since, dryRun })
+      : invoke<number>("history_clear", { paths, since, dryRun });
 
   importFiles = () => invoke<ExtFile[] | null>("import_files");
   importDir = () => invoke<ExtDir | null>("import_dir");

@@ -544,6 +544,48 @@ async fn history_move(dir: State<'_, NotesDir>, from: String, to: String, folder
     move_history(&dir.root(), &from, &to, folder)
 }
 
+/// Remove versions saved at or after `since` (all of them when None) from a
+/// history folder and everything inside it. Returns how many were (or, with
+/// `dry_run`, would be) removed. Folders left empty are removed too.
+fn clear_versions(dir: &Path, since: Option<u64>, dry_run: bool) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            removed += clear_versions(&path, since, dry_run);
+            continue;
+        }
+        let at = entry.file_name().to_str().and_then(|n| n.strip_suffix(".md")).and_then(|n| n.parse::<u64>().ok());
+        let Some(at) = at else { continue };
+        if since.map_or(true, |s| at >= s) && (dry_run || fs::remove_file(&path).is_ok()) {
+            removed += 1;
+        }
+    }
+    if !dry_run {
+        let _ = fs::remove_dir(dir); // only succeeds once empty
+    }
+    removed
+}
+
+/// Clear version history for some notes (by path), from `since` on (or all
+/// time). With `dry_run`, only counts.
+#[tauri::command]
+async fn history_clear(dir: State<'_, NotesDir>, paths: Vec<String>, since: Option<u64>, dry_run: bool) -> Res<u64> {
+    let root = dir.root();
+    let mut removed = 0;
+    for p in paths {
+        removed += clear_versions(&history_dir(&root, &p, false)?, since, dry_run);
+    }
+    Ok(removed)
+}
+
+/// Clear version history for every note, from `since` on (or all time).
+#[tauri::command]
+async fn history_clear_all(dir: State<'_, NotesDir>, since: Option<u64>, dry_run: bool) -> Res<u64> {
+    Ok(clear_versions(&dir.root().join(HISTORY_DIR), since, dry_run))
+}
+
 /// Forget a note's history (when the note is deleted for good).
 #[tauri::command]
 async fn history_delete(dir: State<'_, NotesDir>, path: String) -> Res<()> {
@@ -696,6 +738,8 @@ pub fn run() {
             history_read,
             history_move,
             history_delete,
+            history_clear,
+            history_clear_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running monkeynotes");
@@ -797,6 +841,15 @@ mod tests {
 
         move_history(&root, "ideas", "work", true).unwrap();
         assert_eq!(versions_in(&history_dir(&root, "work/b.md", false).unwrap()).len(), HISTORY_KEEP);
+
+        // clearing: count first, then only the recent ones, then everything
+        let work = root.join(HISTORY_DIR).join("work");
+        let all = clear_versions(&work, None, true);
+        assert_eq!(all, HISTORY_KEEP as u64);
+        let newest = versions_in(&history_dir(&root, "work/b.md", false).unwrap())[0];
+        assert_eq!(clear_versions(&work, Some(newest), false), 1);
+        assert_eq!(clear_versions(&work, None, false), (HISTORY_KEEP - 1) as u64);
+        assert!(!work.exists());
 
         assert!(history_dir(&root, "../escape.md", false).is_err());
         assert!(history_dir(&root, ".git/x.md", false).is_err());

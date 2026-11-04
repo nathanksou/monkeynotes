@@ -20,6 +20,7 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 - **stars**: star notes to keep them at the top of the list and the gallery, and star folders to keep them right below "all notes" in the sidebar.
 - **trash**: deleted notes stay in the trash for 30 days; "delete all forever" at the bottom of the trash empties it.
 - **version history**: before a note is overwritten, its previous text is kept, at most once every 5 minutes. `version history` in the command line lets you arrow through old versions with a live preview, and restoring one keeps the text it replaces.
+- **clear version history**: like clearing browser history. Pick a note, a folder (with its subfolders) or all notes, then a time range (last hour, 24 hours, 7 days, 4 weeks or all time). You see how many versions will go before anything is removed.
 - **find in note** (`ctrl+f`): every match is highlighted; `enter` and `shift+enter` step through them.
 - **import / export**: bring in `.md` / `.txt` files or a whole folder, and export a single note or everything.
 - **local only**: no accounts, no sync service, no telemetry. The only network request is an optional once-a-day check of this repo's public releases, so the app can tell you when there's a new version. Turn it off with `check for updates on launch`.

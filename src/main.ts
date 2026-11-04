@@ -540,6 +540,98 @@ async function showHistory(n: Note): Promise<void> {
         preview: () => preview(at),
         run: () => void restore(at),
       })),
+      {
+        label: "clear this note's version history",
+        preview: showCurrent,
+        sub: () => historyRangeMenu(noteScope(n)),
+      },
+    ],
+  });
+}
+
+// ---------------------------------------------------------------- clearing version history
+
+interface HistoryScope {
+  /** "this note", "folder work", "all notes" */
+  label: string;
+  /** null = every note */
+  notes: Note[] | null;
+}
+
+const HOUR = 60 * 60 * 1000;
+const HISTORY_RANGES: [string, number | null][] = [
+  ["the last hour", HOUR],
+  ["the last 24 hours", 24 * HOUR],
+  ["the last 7 days", 7 * 24 * HOUR],
+  ["the last 4 weeks", 28 * 24 * HOUR],
+  ["all time", null],
+];
+
+const noteScope = (n: Note): HistoryScope => ({ label: `"${noteTitle(n)}"`, notes: [n] });
+
+/** A folder and its subfolders, including notes from there that are now in the trash. */
+function folderScope(id: string): HistoryScope {
+  const inside = (f: string) => (id === ROOT ? f === ROOT : f === id || f.startsWith(id + "/"));
+  return { label: `the "${folderName(id)}" folder`, notes: vault.notes.filter((n) => inside(n.folderId)) };
+}
+
+const allScope: HistoryScope = { label: "all notes", notes: null };
+
+/** Step 1 (from the command line): what to clear. */
+function clearHistoryMenu(): Menu {
+  const n = current();
+  const folder = view().folderId;
+  const scopes: HistoryScope[] = [
+    ...(n?.path ? [noteScope(n)] : []),
+    ...(isRealFolder(folder) ? [folderScope(folder)] : []),
+    allScope,
+  ];
+  return {
+    title: "clear version history for...",
+    items: scopes.map((scope) => ({ label: scope.label, sub: () => historyRangeMenu(scope) })),
+  };
+}
+
+/** Step 2: how far back. */
+function historyRangeMenu(scope: HistoryScope): Menu {
+  return {
+    title: `clear version history for ${scope.label} from...`,
+    items: HISTORY_RANGES.map(([label, span]) => ({
+      label,
+      run: () => void confirmClearHistory(scope, span === null ? null : Date.now() - span, label),
+    })),
+  };
+}
+
+/** Step 3: say exactly what will go, then do it. */
+async function confirmClearHistory(scope: HistoryScope, since: number | null, range: string): Promise<void> {
+  let count: number;
+  try {
+    count = await vault.clearHistory(scope.notes, since, true);
+  } catch (e) {
+    toast(`couldn't read version history: ${e}`);
+    return;
+  }
+  if (!count) {
+    toast(`no versions of ${scope.label} from ${range}`);
+    return;
+  }
+  const what = `${count} version${count === 1 ? "" : "s"}`;
+  openPalette({
+    title: `clear ${what} of ${scope.label} from ${range}? this can't be undone`,
+    items: [
+      { label: "no, keep them", run: () => undefined },
+      {
+        label: `yes, clear ${what}`,
+        run: async () => {
+          try {
+            const removed = await vault.clearHistory(scope.notes, since, false);
+            toast(`cleared ${removed} version${removed === 1 ? "" : "s"} of ${scope.label}`);
+          } catch (e) {
+            toast(`couldn't clear version history: ${e}`);
+          }
+        },
+      },
     ],
   });
 }
@@ -1044,7 +1136,12 @@ function noteCommands(n: Note): Command[] {
         items: vault.folders.map((f) => ({ label: folderPath(f.id), active: f.id === n.folderId, run: () => moveNote(n, f.id) })),
       }),
     },
-    ...(n.path ? [{ label: "version history", hint: "browse and restore", run: () => void showHistory(n) }] : []),
+    ...(n.path
+      ? [
+          { label: "version history", hint: "browse and restore", run: () => void showHistory(n) },
+          { label: "clear this note's version history", sub: () => historyRangeMenu(noteScope(n)) },
+        ]
+      : []),
     { label: "export note", hint: ".md", run: () => void exportNote(n) },
     { label: "copy note to clipboard", run: () => void navigator.clipboard.writeText(n.body) },
     { label: "delete note", hint: "moves it to the trash", run: () => trashNote(n) },
@@ -1066,6 +1163,7 @@ function folderCommands(id: string): Command[] {
       },
     },
     { label: `new folder inside "${f.name}"`, run: () => void newFolder(id) },
+    { label: `clear version history of "${f.name}"`, hint: "and its subfolders", sub: () => historyRangeMenu(folderScope(id)) },
     { label: `rename folder "${f.name}"`, run: () => void renameFolder(id) },
     {
       label: `delete folder "${f.name}"`,
@@ -1126,6 +1224,7 @@ function rootMenu(): Menu {
     },
     ...(n ? noteCommands(n) : []),
     ...folderCommands(view().folderId),
+    { label: "clear version history", hint: "a note, a folder or everything", sub: clearHistoryMenu },
     { label: "import notes", hint: ".md / .txt", run: () => void importFiles() },
     ...(desktop
       ? [

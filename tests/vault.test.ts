@@ -431,3 +431,43 @@ describe("starred folders", () => {
     expect([...again.starredFolders]).toEqual(["archive/2026"]);
   });
 });
+
+describe("clearing version history", () => {
+  async function withHistory() {
+    const o = await open({ "a.md": "a", "work/b.md": "b", "work/sub/c.md": "c" });
+    const now = Date.now();
+    const hour = 60 * 60 * 1000;
+    for (const path of ["a.md", "work/b.md", "work/sub/c.md"]) {
+      o.be.history[path] = { [now - 48 * hour]: "two days ago", [now - 2 * hour]: "two hours ago", [now - 60_000]: "a minute ago" };
+    }
+    return { ...o, now, hour };
+  }
+  const count = (be: MemoryBackend) => Object.values(be.history).reduce((n, h) => n + Object.keys(h).length, 0);
+
+  it("counts without deleting on a dry run", async () => {
+    const { be, v, now, hour } = await withHistory();
+    expect(await v.clearHistory(null, now - 24 * hour, true)).toBe(6);
+    expect(count(be)).toBe(9);
+  });
+
+  it("clears one note's recent versions only", async () => {
+    const { be, v, now, hour } = await withHistory();
+    const a = v.notes.find((n) => n.path === "a.md")!;
+    expect(await v.clearHistory([a], now - hour)).toBe(1);
+    expect(Object.values(be.history["a.md"])).toEqual(["two days ago", "two hours ago"]);
+    expect(count(be)).toBe(8);
+  });
+
+  it("clears a folder including its subfolders, all time", async () => {
+    const { be, v } = await withHistory();
+    const inWork = v.notes.filter((n) => n.folderId === "work" || n.folderId.startsWith("work/"));
+    expect(await v.clearHistory(inWork, null)).toBe(6);
+    expect(Object.keys(be.history)).toEqual(["a.md"]);
+  });
+
+  it("clears everything", async () => {
+    const { be, v } = await withHistory();
+    expect(await v.clearHistory(null, null)).toBe(9);
+    expect(be.history).toEqual({});
+  });
+});

@@ -506,6 +506,18 @@ export class Vault {
     return this.be.historyRead(n.path, at);
   }
 
+  /**
+   * Clear version history saved at or after `since` (all time when null) for
+   * the given notes, or for every note when `notes` is null. With `dryRun`,
+   * only counts. Pending saves are written first so nothing new sneaks in.
+   */
+  async clearHistory(notes: Note[] | null, since: number | null, dryRun = false): Promise<number> {
+    await this.flush();
+    const paths = notes === null ? null : notes.filter((n) => n.path).map((n) => n.path);
+    if (paths && !paths.length) return 0;
+    return this.be.historyClear(paths, since, dryRun);
+  }
+
   /** Put an old version back. The current text is kept as a version first. */
   restoreVersion(n: Note, body: string): void {
     if (n.deletedAt || body === n.body) return;
