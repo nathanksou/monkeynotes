@@ -104,8 +104,18 @@ export function applyView(): void {
   for (const el of [els.scroller, els.footer]) el.inert = galleryShown();
 }
 
+let switchingTimer = 0;
+
 export function setView(mode: "list" | "grid"): void {
   app.galleryNoteOpen = false;
+  if (settings().viewMode !== mode) {
+    // restart the fade on the list box / card grid
+    els.app.classList.remove("switching");
+    void els.app.offsetWidth;
+    els.app.classList.add("switching");
+    clearTimeout(switchingTimer);
+    switchingTimer = window.setTimeout(() => els.app.classList.remove("switching"), 250);
+  }
   if (settings().viewMode !== mode) setSetting("viewMode", mode);
   else applyView();
   renderNotes();

@@ -992,10 +992,17 @@ kbd {
   --notes-w: 0px;
 }
 
+/* hidden panes disappear at once (no fade), so titles never flicker */
 #app.hide-folders #folders,
 #app.grid #notes {
-  opacity: 0;
+  visibility: hidden;
   pointer-events: none;
+}
+
+/* switching list <-> gallery: only the list box and the card grid fade in */
+#app.switching #note-list,
+#app.switching #gallery-grid {
+  animation: fade-in 180ms ease-out;
 }
 
 .icon svg {
