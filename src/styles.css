@@ -263,12 +263,37 @@ kbd {
   min-width: 0;
 }
 
+.search-box {
+  position: relative;
+  display: block;
+}
+
+/* magnifier on the right; it steps aside for the clear button once you type */
+.search-box svg {
+  position: absolute;
+  right: 0.7rem;
+  top: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  margin-top: -0.475rem;
+  fill: none;
+  stroke: var(--sub);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+#search:not(:placeholder-shown) + svg {
+  display: none;
+}
+
 #search {
+  display: block;
   width: min(340px, 36vw);
   background: var(--sub-alt);
   border: 0;
   outline: 0;
-  padding: 0.4rem 0.7rem;
+  padding: 0.4rem 2.1rem 0.4rem 0.7rem;
   border-radius: var(--radius);
   color: var(--text);
   caret-color: var(--caret);
