@@ -73,7 +73,7 @@ App settings (theme, font and so on) are stored separately in the app's data fol
 
 ## development
 
-You need [Node 20+](https://nodejs.org), [Rust](https://rustup.rs) and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/).
+You need [Node 22.12+](https://nodejs.org), [Rust](https://rustup.rs) and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```sh
 npm install
