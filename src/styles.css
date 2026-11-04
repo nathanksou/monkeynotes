@@ -1319,20 +1319,6 @@ kbd {
   margin-right: 0.4rem;
 }
 
-/* "starred" / "notes" labels above each group */
-.section-label {
-  padding: 0.75rem 0.7rem 0.35rem;
-  font-size: 0.7rem;
-  color: var(--sub);
-  list-style: none;
-}
-
-#gallery-grid .section-label {
-  grid-column: 1 / -1;
-  padding: 0;
-  margin-bottom: -0.75rem;
-}
-
 /* ------------------------------------------------------------ trash */
 
 .trash-foot {

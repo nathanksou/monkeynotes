@@ -102,20 +102,6 @@ export function renderFolders(): void {
   );
 }
 
-/** Rows for `notes`, with "starred" / "notes" labels when there are starred ones. */
-export function withSections(notes: Note[], row: (n: Note) => HTMLElement, tag: "li" | "div"): HTMLElement[] {
-  const starred = notes.filter((n) => n.starred);
-  if (!starred.length || view().folderId === TRASH) return notes.map(row);
-  const label = (text: string) => {
-    const el = document.createElement(tag);
-    el.className = "section-label";
-    el.textContent = text;
-    return el;
-  };
-  const rest = notes.filter((n) => !n.starred);
-  return [label("starred"), ...starred.map(row), ...(rest.length ? [label("notes"), ...rest.map(row)] : [])];
-}
-
 /** Note ids in the order the list currently shows them. */
 let renderedOrder: string[] = [];
 
@@ -170,7 +156,7 @@ export function renderNotes(): void {
     renderedOrder = [];
     return;
   }
-  els.noteList.replaceChildren(...withSections(notes, noteRow, "li"));
+  els.noteList.replaceChildren(...notes.map(noteRow));
   renderedOrder = notes.map((n) => n.id);
   els.noteList.querySelector("li.active")?.scrollIntoView({ block: "nearest" });
 }

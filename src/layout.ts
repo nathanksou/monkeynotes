@@ -1,6 +1,6 @@
 import { type Note, type Settings, defaultSettings, formatDate, noteExcerpt, noteTitle } from "./model";
 import { app, current, els, galleryShown, isGrid, notesInView, saveState, settings, viewTitle } from "./app";
-import { applySettings, emptyText, renderFolders, renderNotes, withSections } from "./list";
+import { applySettings, emptyText, renderFolders, renderNotes } from "./list";
 import { openNote } from "./notes";
 
 export function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
@@ -190,7 +190,7 @@ export function renderGallery(notes: Note[] = notesInView()): void {
     els.galleryGrid.replaceChildren(empty);
     return;
   }
-  els.galleryGrid.replaceChildren(...withSections(notes, noteCard, "div"));
+  els.galleryGrid.replaceChildren(...notes.map(noteCard));
 }
 
 /** Arrow keys move between cards (up/down to the nearest card in the next row); enter opens one. */
