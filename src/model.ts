@@ -217,21 +217,38 @@ export function noteTitle(n: Note): string {
   return titleLine(n.body).slice(0, 80) || "new note";
 }
 
-export function notePreview(n: Note): string {
+/**
+ * The note's text without the line that serves as its title, so previews don't
+ * repeat what the title already says. In file-name mode the first line isn't the
+ * title, so it stays, unless it just repeats the title as a heading. A title taken
+ * from the front matter's title: key doesn't use up a content line either.
+ */
+function bodyBelowTitle(n: Note): string {
   const fm = frontMatter(n.body);
-  const lines = firstLines(fm ? n.body.slice(fm.end) : n.body, 2);
-  // In file-name mode the first line isn't the title, so it is the preview,
-  // unless it just repeats the title as a heading. A title taken from the front
-  // matter's title: key doesn't use up a content line either.
+  const body = fm ? n.body.slice(fm.end) : n.body;
   const fromKey = !!fm?.title && !(titleSource === "file name" && n.path);
-  const skip = fromKey
-    ? 0
-    : titleSource === "file name" && n.path
-      ? titleLine(lines[0] ?? "") === noteTitle(n)
-        ? 1
-        : 0
-      : 1;
-  return (lines[skip] ?? "").trim().slice(0, 120);
+  const fileMode = titleSource === "file name" && n.path;
+  if (fromKey) return body;
+  if (fileMode && titleLine(firstLines(body, 1)[0] ?? "") !== noteTitle(n)) return body;
+  // drop the first non-empty line
+  let start = 0;
+  while (start <= body.length) {
+    const end = body.indexOf("\n", start);
+    const stop = end === -1 ? body.length : end;
+    if (body.slice(start, stop).trim() !== "") return end === -1 ? "" : body.slice(end + 1);
+    if (end === -1) return "";
+    start = end + 1;
+  }
+  return "";
+}
+
+export function notePreview(n: Note): string {
+  return (firstLines(bodyBelowTitle(n), 1)[0] ?? "").trim().slice(0, 120);
+}
+
+/** A few lines of the note for gallery cards, without its title. */
+export function noteExcerpt(n: Note, max = 600): string {
+  return bodyBelowTitle(n).replace(/^\s*\n/, "").slice(0, max);
 }
 
 /** Words (runs of non-space), counted without building a list of them. */

@@ -1,4 +1,4 @@
-import { type Note, type Settings, defaultSettings, formatDate, noteTitle } from "./model";
+import { type Note, type Settings, defaultSettings, formatDate, noteExcerpt, noteTitle } from "./model";
 import { app, current, els, galleryShown, isGrid, notesInView, saveState, settings, viewTitle } from "./app";
 import { applySettings, emptyText, renderFolders, renderNotes, withSections } from "./list";
 import { openNote } from "./notes";
@@ -139,7 +139,7 @@ function noteCard(n: Note): HTMLElement {
   if (n.id === app.currentId) card.classList.add("active");
   const thumb = document.createElement("div");
   thumb.className = "thumb";
-  thumb.textContent = n.body.slice(0, 600) || " ";
+  thumb.textContent = noteExcerpt(n) || " ";
   const title = document.createElement("div");
   title.className = "card-title";
   title.textContent = noteTitle(n);
