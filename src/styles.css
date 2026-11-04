@@ -81,15 +81,10 @@ kbd {
 
 #app {
   display: grid;
-  grid-template-columns: 200px 280px 1fr;
   height: 100vh;
   transition:
     grid-template-columns 250ms ease,
     opacity 250ms;
-}
-
-#app.zen {
-  grid-template-columns: 0 0 1fr;
 }
 
 .pane {
@@ -596,15 +591,6 @@ kbd {
   }
 }
 
-@media (max-width: 760px) {
-  #app {
-    grid-template-columns: 0 220px 1fr;
-  }
-  #folders {
-    opacity: 0;
-    pointer-events: none;
-  }
-}
 
 /* ------------------------------------------------------------ find in note */
 
@@ -966,4 +952,95 @@ kbd {
 
 .screen-action:hover {
   color: var(--main);
+}
+
+/* ------------------------------------------------------------ collapsible sidebars */
+
+#app {
+  --folders-w: 200px;
+  --notes-w: 280px;
+  grid-template-columns: var(--folders-w) var(--notes-w) 1fr;
+}
+
+#app.hide-folders,
+#app.zen {
+  --folders-w: 0px;
+}
+
+#app.hide-notes,
+#app.zen {
+  --notes-w: 0px;
+}
+
+#app.hide-folders #folders,
+#app.hide-notes #notes {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.pane-toggle {
+  display: grid;
+  place-items: center;
+}
+
+.pane-toggle svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* expand buttons, shown at the top left of the editor when a sidebar is hidden */
+.show-panes {
+  position: absolute;
+  top: 50%;
+  left: 1rem;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#show-folders,
+#show-notes {
+  display: none;
+}
+
+#app.hide-folders #show-folders,
+#app.zen #show-folders,
+#app.hide-notes #show-notes,
+#app.zen #show-notes {
+  display: inline;
+}
+
+.show-pane {
+  font-size: 0.85rem;
+}
+
+.show-pane::before {
+  content: "\25b8 ";
+  opacity: 0.7;
+}
+
+@media (max-width: 760px) {
+  /* narrow windows: no room for the folders sidebar */
+  #app {
+    --folders-w: 0px;
+  }
+  #app:not(.hide-notes):not(.zen) {
+    --notes-w: 220px;
+  }
+  #app #folders {
+    opacity: 0;
+    pointer-events: none;
+  }
 }

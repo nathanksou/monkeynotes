@@ -271,6 +271,8 @@ function applySettings(): void {
   );
   root.setProperty("--line-width", s.lineWidth === "narrow" ? "60ch" : s.lineWidth === "wide" ? "100%" : "80ch");
   els.app.classList.toggle("zen", s.zen);
+  els.app.classList.toggle("hide-folders", s.hideFolders);
+  els.app.classList.toggle("hide-notes", s.hideNotes);
   els.app.classList.toggle("no-stats", !s.liveStats);
   editor?.ta.setAttribute("spellcheck", String(s.spellcheck));
   editor?.setSmooth(s.smoothCaret);
@@ -285,7 +287,7 @@ function openNote(id: string | null, opts: { focus?: boolean } = {}): void {
   find.close(false);
   currentId = id;
   const n = current();
-  editor.load(n?.body ?? "", { readOnly: !n || !!n.deletedAt, caretAt: "end" });
+  editor.load(n?.body ?? "", { readOnly: !n || !!n.deletedAt, caretAt: "start" });
   els.fx.replaceChildren();
   paintLinks();
   els.page.classList.toggle("empty", !n);
@@ -517,6 +519,18 @@ function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void 
   state.settings[key] = value;
   applySettings();
   saveState();
+}
+
+/** Collapse or expand one sidebar. Showing one also leaves zen mode. */
+function togglePane(pane: "folders" | "notes"): void {
+  const key = pane === "folders" ? "hideFolders" : "hideNotes";
+  const s = settings();
+  const hidden = s.zen || s[key];
+  if (hidden && s.zen) {
+    // leaving zen: show the pane that was asked for, keep the other as it was
+    s.zen = false;
+  }
+  setSetting(key, !hidden);
 }
 
 function focusEditor(): void {
@@ -896,7 +910,9 @@ function rootMenu(): Menu {
       sub: () => choice("focus mode", onOff, () => s.focusMode, (v) => setSetting("focusMode", v)),
     },
     { label: "spellcheck", sub: () => choice("spellcheck", onOff, () => s.spellcheck, (v) => setSetting("spellcheck", v)) },
-    { label: s.zen ? "exit zen mode" : "zen mode", hint: "ctrl+\\", run: () => setSetting("zen", !s.zen) },
+    { label: s.zen ? "exit zen mode" : "zen mode", hint: "hide both sidebars · ctrl+\\", run: () => setSetting("zen", !s.zen) },
+    { label: s.hideFolders ? "show folders" : "hide folders", run: () => togglePane("folders") },
+    { label: s.hideNotes ? "show notes list" : "hide notes list", run: () => togglePane("notes") },
     ...(desktop
       ? [
           { label: "change notes folder", hint: notesDirPath, run: () => void changeNotesDir(true) },
@@ -1044,6 +1060,10 @@ function bindEvents(): void {
   });
 
   $("#new-note").addEventListener("click", newNote);
+  $("#hide-folders").addEventListener("click", () => togglePane("folders"));
+  $("#hide-notes").addEventListener("click", () => togglePane("notes"));
+  $("#show-folders").addEventListener("click", () => togglePane("folders"));
+  $("#show-notes").addEventListener("click", () => togglePane("notes"));
   $("#new-folder").addEventListener("click", () => void newFolder());
   $("#open-palette").addEventListener("click", () => openPalette());
 
@@ -1102,7 +1122,12 @@ function bindEvents(): void {
       const changed = await vault.reload(currentId);
       const n = current();
       if (!n) openNote(notesInView()[0]?.id ?? null, { focus: false });
-      else if (changed) editor.load(n.body, { caretAt: "end" });
+      // changed in another app: keep the caret and scroll where they were
+      else if (changed) {
+        const top = els.scroller.scrollTop;
+        editor.load(n.body, { caretAt: editor.ta.selectionStart });
+        els.scroller.scrollTop = top;
+      }
       renderAll();
     } catch (e) {
       toast(`couldn't read notes folder: ${e}`);

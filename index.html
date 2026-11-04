@@ -12,6 +12,7 @@
       <aside id="folders" class="pane">
         <header class="pane-head">
           <span class="brand"><span class="accent">monkey</span>notes</span>
+          <button id="hide-folders" class="icon pane-toggle" title="hide folders" aria-label="hide folders"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/><path d="M10.5 6 8.5 8l2 2"/></svg></button>
         </header>
         <ul id="folder-list" class="list"></ul>
         <div class="pane-foot">
@@ -22,7 +23,10 @@
       <section id="notes" class="pane">
         <header class="pane-head">
           <span id="notes-title"></span>
-          <button id="new-note" class="icon" title="new note (ctrl+n)">+</button>
+          <span class="pane-actions">
+            <button id="new-note" class="icon" title="new note (ctrl+n)">+</button>
+            <button id="hide-notes" class="icon pane-toggle" title="hide notes list" aria-label="hide notes list"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/><path d="M10.5 6 8.5 8l2 2"/></svg></button>
+          </span>
         </header>
         <div class="search-wrap">
           <input id="search" type="text" placeholder="search" spellcheck="false" autocomplete="off" />
@@ -32,6 +36,10 @@
 
       <main id="main">
         <div id="topbar">
+          <span class="show-panes">
+            <button id="show-folders" class="ghost show-pane" title="show folders">folders</button>
+            <button id="show-notes" class="ghost show-pane" title="show notes list">notes</button>
+          </span>
           <button id="open-palette" class="ghost" title="command line (esc)">esc</button>
         </div>
         <div id="find" hidden>

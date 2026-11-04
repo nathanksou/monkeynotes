@@ -55,7 +55,11 @@ export interface Settings {
   soundVolume: number;
   typingAnimation: TypingAnimation;
   checkUpdates: boolean;
+  /** Fade the sidebars and footer while typing (off by default). */
   focusMode: boolean;
+  /** Collapse the folders sidebar / the notes list. */
+  hideFolders: boolean;
+  hideNotes: boolean;
   spellcheck: boolean;
   zen: boolean;
   titleSource: TitleSource;
@@ -63,6 +67,8 @@ export interface Settings {
 
 export interface AppState {
   version: 2;
+  /** Bumped when a default changes in a way existing settings should pick up. */
+  settingsRevision: number;
   settings: Settings;
   /** UI state restored on launch. */
   view: { folderId: string; notePath: string | null; collapsed: string[] };
@@ -84,7 +90,9 @@ export const defaultSettings: Settings = {
   lineWidth: "normal",
   smoothCaret: true,
   liveStats: true,
-  focusMode: true,
+  focusMode: false,
+  hideFolders: false,
+  hideNotes: false,
   spellcheck: false,
   zen: false,
   titleSource: "first line",
@@ -121,9 +129,14 @@ export function uid(): string {
 
 export function normalizeState(raw: unknown): AppState {
   const st = (raw && typeof raw === "object" ? raw : {}) as Partial<AppState>;
+  const settings = { ...defaultSettings, ...(st.settings ?? {}) };
+  const revision = typeof st.settingsRevision === "number" ? st.settingsRevision : 0;
+  // Revision 1: focus mode (hiding the UI while typing) became opt-in.
+  if (revision < 1) settings.focusMode = false;
   return {
     version: 2,
-    settings: { ...defaultSettings, ...(st.settings ?? {}) },
+    settingsRevision: 1,
+    settings,
     view: { folderId: ALL, notePath: null, collapsed: [], ...(st.view ?? {}) },
     stats: st.stats && typeof st.stats === "object" && st.stats.days ? st.stats : { days: {} },
     lastUpdateCheck: typeof st.lastUpdateCheck === "number" ? st.lastUpdateCheck : 0,

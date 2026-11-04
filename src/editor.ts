@@ -99,14 +99,20 @@ export class Editor {
   }
 
   /** Replace the content (e.g. switching notes). Resets undo history. */
-  load(value: string, opts: { readOnly?: boolean; caretAt?: "start" | "end" } = {}): void {
+  /**
+   * Replace the content (e.g. switching notes). Resets undo history. The caret
+   * goes to `caretAt`: the start (default), the end, or a text position.
+   */
+  load(value: string, opts: { readOnly?: boolean; caretAt?: "start" | "end" | number } = {}): void {
     this.ta.value = value;
     this.ta.readOnly = !!opts.readOnly;
-    const pos = opts.caretAt === "start" ? 0 : value.length;
+    const at = opts.caretAt ?? "start";
+    const pos = at === "start" ? 0 : at === "end" ? value.length : Math.min(Math.max(0, at), value.length);
     this.ta.setSelectionRange(pos, pos);
     this.caret.classList.add("no-anim");
     this.update();
-    this.scroller.scrollTop = opts.caretAt === "start" ? 0 : this.scroller.scrollHeight;
+    if (at === "start") this.scroller.scrollTop = 0;
+    else if (at === "end") this.scroller.scrollTop = this.scroller.scrollHeight;
     requestAnimationFrame(() => this.caret.classList.remove("no-anim"));
   }
 
