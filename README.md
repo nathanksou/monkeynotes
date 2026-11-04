@@ -17,6 +17,8 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 - **command line** (`esc` or `ctrl+k`): every action and setting is a few keystrokes away, including themes with live preview.
 - **189 themes**: Monkeytype's whole collection plus a couple of originals, with live preview, and `random theme` when you can't decide.
 - **plain markdown files**: every note is a `.md` file in a folder you choose, so you can sync it with iCloud, Dropbox or git, or open it in any other editor.
+- **stars**: star notes to keep them at the top of the list and the gallery, and star folders to keep them right below "all notes" in the sidebar.
+- **trash**: deleted notes stay in the trash for 30 days; "delete all forever" at the bottom of the trash empties it.
 - **version history**: before a note is overwritten, its previous text is kept, at most once every 5 minutes. `version history` in the command line lets you arrow through old versions with a live preview, and restoring one keeps the text it replaces.
 - **find in note** (`ctrl+f`): every match is highlighted; `enter` and `shift+enter` step through them.
 - **import / export**: bring in `.md` / `.txt` files or a whole folder, and export a single note or everything.
@@ -49,7 +51,7 @@ Notes are plain markdown files. By default they live in `Documents/monkeynotes`.
 monkeynotes/
   welcome to monkeynotes.md   notes in the default "notes" folder
   ideas/app idea.md           each subfolder is a folder in the app
-  .trash/                     recently deleted (kept for 30 days)
+  .trash/                     the trash (kept for 30 days)
   .monkeynotes.json           pins and trash bookkeeping
   .monkeynotes/history/       older versions of each note (newest 50, up to 90 days)
 ```
@@ -64,7 +66,7 @@ monkeynotes/
 
 ### using an obsidian vault
 
-You can point monkeynotes at an [Obsidian](https://obsidian.md) vault with `change notes folder`. Set `note titles` to `file name` so titles match Obsidian's and files are never renamed, which keeps `[[links]]` working. Notes in Obsidian's `.trash` show up under recently deleted but are never deleted automatically. Hidden folders such as `.obsidian` are ignored.
+You can point monkeynotes at an [Obsidian](https://obsidian.md) vault with `change notes folder`. Set `note titles` to `file name` so titles match Obsidian's and files are never renamed, which keeps `[[links]]` working. Notes in Obsidian's `.trash` show up in the trash but are never deleted automatically. Hidden folders such as `.obsidian` are ignored.
 
 App settings (theme, font and so on) are stored separately in the app's data folder (`~/Library/Application Support/com.nathansou.monkeynotes` on macOS, `%APPDATA%\com.nathansou.monkeynotes` on Windows, `~/.local/share/com.nathansou.monkeynotes` on Linux). Notes from v0.1 are moved into the notes folder automatically on first launch.
 

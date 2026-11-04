@@ -21,7 +21,10 @@ import { baseOf, dirOf, extOf, join, stemOf, swapPrefix } from "./paths";
 import { type Folder, META_FILE, type Note, ROOT, TRASH_DIR, TRASH_TTL_MS, titleLine, uid } from "./model";
 
 interface Meta {
+  /** Starred notes by path ("pinned" for compatibility with older files). */
   pinned?: string[];
+  /** Starred folder ids. */
+  starredFolders?: string[];
   /** Keyed by file name inside .trash/. */
   trash?: Record<string, { from: string; deletedAt: number }>;
 }
@@ -51,6 +54,8 @@ export function sortFolders(folders: Folder[]): Folder[] {
 export class Vault {
   folders: Folder[] = [];
   notes: Note[] = [];
+  /** Starred folders, shown right below "all notes". */
+  starredFolders = new Set<string>();
   /** Title notes by file name instead of first line (see setTitleFromFile). */
   titleFromFile = false;
   /** Called with a message when a file operation fails. */
@@ -96,6 +101,7 @@ export class Vault {
     const meta = this.parseMeta(scan.meta);
     const pinned = new Set(meta.pinned ?? []);
     this.notes = scan.files.map((f) => this.fromFile(f, f.body ?? "", meta, pinned));
+    this.starredFolders = new Set((meta.starredFolders ?? []).filter((id) => this.folders.some((f) => f.id === id)));
     this.rememberTimes(scan);
     // Recently deleted notes are purged after 30 days, but only ones this app put
     // there: another app's .trash (Obsidian uses one too) is never purged.
@@ -374,7 +380,11 @@ export class Vault {
     for (const n of this.notes) {
       if (n.deletedAt && n.path && !n.foreignTrash) trash[baseOf(n.path)] = { from: n.folderId, deletedAt: n.deletedAt };
     }
-    return { pinned: this.notes.filter((n) => n.pinned && n.path).map((n) => n.path), trash };
+    return {
+      pinned: this.notes.filter((n) => n.pinned && n.path).map((n) => n.path),
+      starredFolders: [...this.starredFolders].sort(),
+      trash,
+    };
   }
 
   /** Runs on the queue, so it sees the paths as they are on disk. */
@@ -505,6 +515,13 @@ export class Vault {
 
   // ---------------------------------------------------------------- folders
 
+  toggleFolderStar(id: string): void {
+    if (id === ROOT || !this.folders.some((f) => f.id === id)) return;
+    if (!this.starredFolders.delete(id)) this.starredFolders.add(id);
+    this.metaDirty = true;
+    this.schedule();
+  }
+
   /** Ids of a folder and everything inside it. */
   private subtree(id: string): string[] {
     return this.folders.filter((f) => f.id === id || f.id.startsWith(id + "/")).map((f) => f.id);
@@ -536,6 +553,8 @@ export class Vault {
     const relabel = (from: string, to: string) => {
       this.folders = sortFolders(this.folders.map((f) => ({ id: swapPrefix(f.id, from, to), name: baseOf(swapPrefix(f.id, from, to)) })));
       for (const n of this.notes) n.folderId = swapPrefix(n.folderId, from, to);
+      this.starredFolders = new Set([...this.starredFolders].map((x) => swapPrefix(x, from, to)));
+      this.metaDirty = true;
     };
     relabel(id, next);
     const pending: [string, string] = [id, next];
@@ -560,7 +579,7 @@ export class Vault {
     return next;
   }
 
-  /** Moves the folder's notes (and its subfolders' notes) to recently deleted, then removes the empty folders. */
+  /** Moves the folder's notes (and its subfolders' notes) to the trash, then removes the empty folders. */
   deleteFolder(id: string): void {
     if (id === ROOT) return;
     const ids = this.subtree(id);
@@ -569,6 +588,8 @@ export class Vault {
       n.folderId = ROOT;
     }
     this.folders = this.folders.filter((f) => !ids.includes(f.id));
+    for (const x of ids) this.starredFolders.delete(x);
+    this.metaDirty = true;
     this.pendingDeletes.add(id);
     // deepest first, so parents are empty by the time we reach them
     const order = [...ids].sort((a, b) => b.split("/").length - a.split("/").length);

@@ -1262,3 +1262,93 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ------------------------------------------------------------ stars */
+
+.star-icon {
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
+  fill: var(--main);
+  stroke: var(--main);
+  stroke-width: 1;
+  stroke-linejoin: round;
+}
+
+.folder .star-icon {
+  margin: 0 0.4rem 0 0.3rem;
+}
+
+.note .title .star-icon,
+.card-title .star-icon {
+  display: inline-block;
+  vertical-align: -0.08em;
+  margin-right: 0.4rem;
+}
+
+/* "starred" / "notes" labels above each group */
+.section-label {
+  padding: 0.75rem 0.7rem 0.35rem;
+  font-size: 0.7rem;
+  color: var(--sub);
+  list-style: none;
+}
+
+#gallery-grid .section-label {
+  grid-column: 1 / -1;
+  padding: 0;
+  margin-bottom: -0.75rem;
+}
+
+/* ------------------------------------------------------------ trash */
+
+.trash-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  flex: none;
+  padding: 0.9rem 1rem 1rem;
+  border-top: 1px solid var(--sub-alt);
+  font-size: 0.75rem;
+  color: var(--sub);
+}
+
+.trash-foot[hidden] {
+  display: none;
+}
+
+#gallery .trash-foot {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.5rem;
+}
+
+.ghost.danger {
+  color: var(--error);
+  font-size: 0.85rem;
+}
+
+.ghost.danger:hover {
+  color: var(--text);
+  background: var(--error);
+}
+
+.ghost.danger {
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius);
+  transition:
+    color var(--speed),
+    background var(--speed);
+}
+
+/* a starred subfolder at the top says where it lives */
+.folder .name .parent {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--sub);
+  opacity: 0.8;
+  font-size: 0.7rem;
+}

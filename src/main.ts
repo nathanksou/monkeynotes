@@ -9,7 +9,7 @@ import { isNotFound } from "./errors";
 import { Find } from "./find";
 import { linkAt, linkRanges } from "./links";
 import { ParagraphLayer } from "./paragraphs";
-import { stemOf, swapPrefix } from "./paths";
+import { baseOf, stemOf, swapPrefix } from "./paths";
 import {
   ALL,
   type AppState,
@@ -84,11 +84,10 @@ const current = (): Note | undefined => vault.get(currentId);
 const view = () => state.view;
 const isRealFolder = (id: string) => vault.folders.some((f) => f.id === id);
 const folderName = (id: string) =>
-  id === ALL ? "all notes" : id === TRASH ? "recently deleted" : (vault.folders.find((f) => f.id === id)?.name ?? "notes");
+  id === ALL ? "all notes" : id === TRASH ? "trash" : (vault.folders.find((f) => f.id === id)?.name ?? "notes");
 /** "projects / 2026" for nested folders. */
 const folderPath = (id: string) => (id === ROOT || id === ALL || id === TRASH ? folderName(id) : id.split("/").join(" / "));
 const depthOf = (id: string) => (id === ROOT || id === ALL || id === TRASH ? 0 : id.split("/").length - 1);
-const hasChildren = (id: string) => id !== ROOT && vault.folders.some((f) => f.id.startsWith(id + "/"));
 /** Hidden because a parent folder is collapsed. */
 const isTucked = (id: string) => view().collapsed.some((c) => id.startsWith(c + "/"));
 /** Where new and imported notes go from the current view. */
@@ -138,28 +137,69 @@ function notesInView(): Note[] {
 
 // ---------------------------------------------------------------- rendering
 
-function renderFolders(): void {
-  const live = vault.notes.filter((n) => !n.deletedAt);
-  const trashed = vault.notes.length - live.length;
-  const rows: { id: string; name: string; count: number }[] = [
-    { id: ALL, name: "all notes", count: live.length },
-    ...vault.folders
-      .filter((f) => !isTucked(f.id))
-      .map((f) => ({ id: f.id, name: f.name, count: live.filter((n) => n.folderId === f.id).length })),
-  ];
-  if (trashed || view().folderId === TRASH) rows.push({ id: TRASH, name: "recently deleted", count: trashed });
+interface FolderRow {
+  id: string;
+  name: string;
+  count: number;
+  depth: number;
+  starred?: boolean;
+  /** for a starred subfolder shown at the top: where it lives */
+  parent?: string;
+  /** whether this row's subfolders are listed right under it */
+  hasKids?: boolean;
+}
 
+/**
+ * Sidebar rows: "all notes", then starred folders (each with its subfolders),
+ * then the rest of the folder tree, then the trash.
+ */
+function folderRows(): FolderRow[] {
+  const live = vault.notes.filter((n) => !n.deletedAt);
+  const count = (id: string) => live.filter((n) => n.folderId === id).length;
+  const starred = vault.starredFolders;
+  const under = (id: string, root: string) => id === root || id.startsWith(root + "/");
+  // starred folders that aren't already inside another starred folder
+  const starRoots = vault.folders.filter((f) => starred.has(f.id) && ![...starred].some((s) => s !== f.id && under(f.id, s)));
+  const inStarBlock = (id: string) => starRoots.some((r) => under(id, r.id));
+
+  const block = (ids: string[], base: (id: string) => number): FolderRow[] => {
+    const visible = ids.filter((id) => !isTucked(id));
+    return visible.map((id) => ({
+      id,
+      name: baseOf(id),
+      parent: base(id) === 0 && id.includes("/") ? folderPath(id.slice(0, id.lastIndexOf("/"))) : undefined,
+      count: count(id),
+      depth: base(id),
+      starred: starred.has(id),
+      hasKids: ids.some((x) => x.startsWith(id + "/")),
+    }));
+  };
+
+  const rows: FolderRow[] = [{ id: ALL, name: "all notes", count: live.length, depth: 0 }];
+  for (const r of starRoots) {
+    const ids = vault.folders.map((f) => f.id).filter((id) => under(id, r.id));
+    rows.push(...block(ids, (id) => depthOf(id) - depthOf(r.id)));
+  }
+  const rest = vault.folders.map((f) => f.id).filter((id) => !inStarBlock(id));
+  rows.push(...block(rest, depthOf).map((row) => (row.id === ROOT ? { ...row, name: "notes", hasKids: false } : row)));
+  const trashed = vault.notes.length - live.length;
+  if (trashed || view().folderId === TRASH) rows.push({ id: TRASH, name: "trash", count: trashed, depth: 0 });
+  return rows;
+}
+
+function renderFolders(): void {
   els.folderList.replaceChildren(
-    ...rows.map((r) => {
+    ...folderRows().map((r) => {
       const li = document.createElement("li");
       li.dataset.id = r.id;
       li.className = "folder";
       if (r.id === view().folderId) li.classList.add("active");
       if (r.id === ALL || r.id === TRASH) li.classList.add("smart");
-      li.style.setProperty("--depth", String(depthOf(r.id)));
+      if (r.starred) li.classList.add("starred");
+      li.style.setProperty("--depth", String(r.depth));
       const twisty = document.createElement("span");
       twisty.className = "twisty";
-      if (hasChildren(r.id)) {
+      if (r.hasKids) {
         twisty.textContent = view().collapsed.includes(r.id) ? "\u25b8" : "\u25be";
         twisty.dataset.toggle = r.id;
       }
@@ -167,13 +207,36 @@ function renderFolders(): void {
       const name = document.createElement("span");
       name.className = "name";
       name.textContent = r.name;
+      if (r.id !== ALL && r.id !== TRASH && r.id !== ROOT) name.title = folderPath(r.id);
+      if (r.parent) {
+        const where = document.createElement("span");
+        where.className = "parent";
+        where.textContent = `in ${r.parent}`;
+        name.append(where);
+      }
+      li.append(name);
+      if (r.starred) li.append(starIcon());
       const count = document.createElement("span");
       count.className = "count";
       count.textContent = String(r.count);
-      li.append(name, count);
+      li.append(count);
       return li;
     }),
   );
+}
+
+/** Rows for `notes`, with "starred" / "notes" labels when there are starred ones. */
+function withSections(notes: Note[], row: (n: Note) => HTMLElement, tag: "li" | "div"): HTMLElement[] {
+  const starred = notes.filter((n) => n.pinned);
+  if (!starred.length || view().folderId === TRASH) return notes.map(row);
+  const label = (text: string) => {
+    const el = document.createElement(tag);
+    el.className = "section-label";
+    el.textContent = text;
+    return el;
+  };
+  const rest = notes.filter((n) => !n.pinned);
+  return [label("starred"), ...starred.map(row), ...(rest.length ? [label("notes"), ...rest.map(row)] : [])];
 }
 
 /** Note ids in the order the list currently shows them. */
@@ -187,7 +250,8 @@ function noteRow(n: Note): HTMLLIElement {
   if (n.id === currentId) li.classList.add("active");
   const title = document.createElement("div");
   title.className = "title";
-  title.textContent = (n.pinned ? "* " : "") + noteTitle(n);
+  title.textContent = noteTitle(n);
+  if (n.pinned) title.prepend(starIcon());
   const meta = document.createElement("div");
   meta.className = "meta";
   const date = document.createElement("span");
@@ -212,6 +276,8 @@ function noteRow(n: Note): HTMLLIElement {
 
 function renderNotes(): void {
   const notes = notesInView();
+  const trashFull = view().folderId === TRASH && notes.length > 0;
+  for (const el of document.querySelectorAll<HTMLElement>(".trash-foot")) el.hidden = !trashFull;
   els.notesTitle.textContent = folderName(view().folderId);
   if (isGrid()) renderGallery(notes);
   if (!notes.length) {
@@ -222,7 +288,7 @@ function renderNotes(): void {
     renderedOrder = [];
     return;
   }
-  els.noteList.replaceChildren(...notes.map(noteRow));
+  els.noteList.replaceChildren(...withSections(notes, noteRow, "li"));
   renderedOrder = notes.map((n) => n.id);
   els.noteList.querySelector("li.active")?.scrollIntoView({ block: "nearest" });
 }
@@ -231,7 +297,7 @@ function renderStats(): void {
   const n = current();
   els.meta.textContent = n
     ? n.deletedAt
-      ? "recently deleted · restore it from the command line"
+      ? "in the trash · restore it from the command line, or it's deleted after 30 days"
       : `${folderPath(n.folderId)} · ${wordCount(n.body)} words · edited ${formatDate(n.updatedAt)}`
     : "";
 }
@@ -361,6 +427,19 @@ function restoreNote(n: Note): void {
   view().folderId = n.folderId;
   renderFolders();
   openNote(n.id);
+}
+
+/** Ask first: emptying the trash can't be undone. */
+function confirmEmptyTrash(): void {
+  const count = vault.notes.filter((n) => n.deletedAt).length;
+  if (!count) return;
+  openPalette({
+    title: `delete ${count} note${count === 1 ? "" : "s"} forever? this can't be undone`,
+    items: [
+      { label: "no, keep them", run: () => undefined },
+      { label: `yes, delete ${count === 1 ? "it" : `all ${count}`} forever`, run: emptyTrash },
+    ],
+  });
 }
 
 function emptyTrash(): void {
@@ -653,7 +732,14 @@ const ICONS = {
   all: '<path d="M3 4.5h10M3 8h10M3 11.5h10"/>',
   folder: '<path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/>',
   trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/>',
+  star: '<path d="m8 2.2 1.75 3.6 3.95.55-2.87 2.77.69 3.93L8 11.2l-3.52 1.85.69-3.93L2.3 6.35l3.95-.55z"/>',
 };
+
+function starIcon(): SVGSVGElement {
+  const svg = folderIcon("star");
+  svg.setAttribute("class", "star-icon");
+  return svg;
+}
 
 function folderIcon(kind: keyof typeof ICONS): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -720,7 +806,8 @@ function noteCard(n: Note): HTMLElement {
   thumb.textContent = n.body.slice(0, 600) || " ";
   const title = document.createElement("div");
   title.className = "card-title";
-  title.textContent = (n.pinned ? "* " : "") + noteTitle(n);
+  title.textContent = noteTitle(n);
+  if (n.pinned) title.prepend(starIcon());
   const date = document.createElement("div");
   date.className = "card-date";
   date.textContent = formatDate(n.updatedAt);
@@ -738,7 +825,7 @@ function renderGallery(notes: Note[] = notesInView()): void {
     els.galleryGrid.replaceChildren(empty);
     return;
   }
-  els.galleryGrid.replaceChildren(...notes.map(noteCard));
+  els.galleryGrid.replaceChildren(...withSections(notes, noteCard, "div"));
 }
 
 /** Arrow keys move between cards; enter opens one. */
@@ -948,7 +1035,7 @@ function noteCommands(n: Note): Command[] {
   return [
     { label: "find in note", hint: "ctrl+f", run: () => find.open() },
     ...(linkAt(n.body, editor.ta.selectionStart) ? [{ label: "follow link", hint: "ctrl+enter", run: () => void followLinkAtCaret() }] : []),
-    { label: n.pinned ? "unpin note" : "pin note", run: () => togglePin(n) },
+    { label: n.pinned ? "unstar note" : "star note", hint: "keeps it at the top", run: () => togglePin(n) },
     { label: "rename note", hint: "file name", run: () => void renameNote(n) },
     {
       label: "move note to",
@@ -960,22 +1047,30 @@ function noteCommands(n: Note): Command[] {
     ...(n.path ? [{ label: "version history", hint: "browse and restore", run: () => void showHistory(n) }] : []),
     { label: "export note", hint: ".md", run: () => void exportNote(n) },
     { label: "copy note to clipboard", run: () => void navigator.clipboard.writeText(n.body) },
-    { label: "delete note", hint: "moves to recently deleted", run: () => trashNote(n) },
+    { label: "delete note", hint: "moves it to the trash", run: () => trashNote(n) },
   ];
 }
 
 function folderCommands(id: string): Command[] {
-  if (id === TRASH) return [{ label: "empty recently deleted", run: emptyTrash }];
+  if (id === TRASH) return [{ label: "empty trash", hint: "delete everything in it forever", run: confirmEmptyTrash }];
   const f = vault.folders.find((x) => x.id === id);
   if (!f || id === ROOT) return [];
   const count = vault.notes.filter((n) => (n.folderId === id || n.folderId.startsWith(id + "/")) && !n.deletedAt).length;
   return [
+    {
+      label: vault.starredFolders.has(id) ? `unstar folder "${f.name}"` : `star folder "${f.name}"`,
+      hint: "shows it below all notes",
+      run: () => {
+        vault.toggleFolderStar(id);
+        renderFolders();
+      },
+    },
     { label: `new folder inside "${f.name}"`, run: () => void newFolder(id) },
     { label: `rename folder "${f.name}"`, run: () => void renameFolder(id) },
     {
       label: `delete folder "${f.name}"`,
       sub: () => ({
-        title: count ? `delete "${f.name}" and move its ${count} notes to recently deleted?` : `delete "${f.name}"?`,
+        title: count ? `delete "${f.name}" and move its ${count} notes to the trash?` : `delete "${f.name}"?`,
         items: [
           { label: "no", run: () => undefined },
           { label: "yes, delete", run: () => deleteFolder(id) },
@@ -1025,7 +1120,7 @@ function rootMenu(): Menu {
         items: [
           { id: ALL, name: "all notes" },
           ...vault.folders,
-          ...(vault.notes.some((x) => x.deletedAt) ? [{ id: TRASH, name: "recently deleted" }] : []),
+          ...(vault.notes.some((x) => x.deletedAt) ? [{ id: TRASH, name: "trash" }] : []),
         ].map((f) => ({ label: folderPath(f.id), active: f.id === view().folderId, run: () => openFolder(f.id) })),
       }),
     },
@@ -1306,6 +1401,7 @@ function bindEvents(): void {
     b.addEventListener("click", () => setView(b.dataset.view as "list" | "grid"));
   }
   $("#sidebar-toggle").addEventListener("click", toggleFolders);
+  for (const b of document.querySelectorAll<HTMLElement>(".js-empty-trash")) b.addEventListener("click", confirmEmptyTrash);
   $("#back-to-gallery").addEventListener("click", backToGallery);
 
   // gallery: open a card, right-click for actions, drag onto a folder, search

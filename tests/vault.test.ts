@@ -408,3 +408,26 @@ describe("version history", () => {
     expect(be.history).toEqual({});
   });
 });
+
+describe("starred folders", () => {
+  it("are saved, follow renames and are dropped when the folder is deleted", async () => {
+    const { be, v } = await open({ "projects/2026/plan.md": "plan", "work/a.md": "a" });
+    v.toggleFolderStar("projects/2026");
+    v.toggleFolderStar("work");
+    await v.flush();
+    const meta = () => JSON.parse(be.files.get(".monkeynotes.json")!.body).starredFolders;
+    expect(meta()).toEqual(["projects/2026", "work"]);
+
+    v.renameFolder("projects", "archive");
+    await v.flush();
+    expect(meta()).toEqual(["archive/2026", "work"]);
+
+    v.deleteFolder("work");
+    await v.flush();
+    expect(meta()).toEqual(["archive/2026"]);
+
+    const again = new Vault(be);
+    await again.load();
+    expect([...again.starredFolders]).toEqual(["archive/2026"]);
+  });
+});

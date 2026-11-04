@@ -16,7 +16,7 @@ export interface Note {
   createdAt: number;
   updatedAt: number;
   pinned?: boolean;
-  /** Set when the note is in "recently deleted". folderId is where it came from. */
+  /** Set when the note is in the trash. folderId is where it came from. */
   deletedAt?: number;
   /** In .trash/ but not put there by this app (e.g. Obsidian's trash): never auto-purged. */
   foreignTrash?: boolean;
