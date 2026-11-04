@@ -1448,3 +1448,21 @@ kbd {
 #note-head #star-note {
   margin-left: auto;
 }
+
+/* version history sits right after the "edited" time in the footer */
+.meta-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+#footer .icon {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+#footer .icon svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}

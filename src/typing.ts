@@ -1,7 +1,6 @@
 import { linkAt, linkRanges } from "./links";
 import { stemOf } from "./paths";
 import { ALL, noteTitle } from "./model";
-import { formatDuration } from "./stats";
 import { renderStatsView } from "./stats-view";
 import { app, current, els, saveState, settings, targetFolder, toast, view } from "./app";
 import { renderFolders } from "./list";
@@ -31,15 +30,10 @@ let lastStatsKey = "";
 export function renderStatsBar(): void {
   if (!settings().liveStats) return;
   const live = app.stats.live();
-  const today = app.stats.today();
-  const streak = app.stats.streak();
   const parts: [string, string, string?][] = [
     [String(live ?? app.stats.lastWpm), "wpm", live === null ? "idle" : "live"],
-    [String(Math.round(today.chars / 5)), "words today"],
-    [formatDuration(today.ms), "typing today"],
     [String(app.stats.average()), "avg wpm"],
   ];
-  if (streak) parts.push([String(streak), "day streak"]);
   const key = JSON.stringify(parts);
   if (key === lastStatsKey) return;
   lastStatsKey = key;
