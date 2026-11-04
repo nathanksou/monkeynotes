@@ -72,6 +72,18 @@ fn resolve(root: &Path, rel: &str) -> Res<PathBuf> {
     }
     // "a//b", "a/./b" and (on Windows) "a./b" or "a /b" are other spellings of real
     // paths; refuse them so every check below sees one canonical form.
+    // Windows treats CON, NUL, COM1 ... as devices even with an extension (nul.txt).
+    let device = cfg!(windows)
+        && rel.split('/').any(|seg| {
+            let stem = seg.split('.').next().unwrap_or("").to_ascii_lowercase();
+            matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+                || ((stem.starts_with("com") || stem.starts_with("lpt"))
+                    && stem.len() == 4
+                    && stem.as_bytes()[3].is_ascii_digit())
+        });
+    if device {
+        return Err(format!("invalid path: {rel}"));
+    }
     let aliased = rel
         .split('/')
         .any(|seg| seg.is_empty() || seg == "." || (cfg!(windows) && (seg.ends_with('.') || seg.ends_with(' '))));
@@ -143,14 +155,25 @@ fn read_opt(path: &Path) -> Res<Option<String>> {
     }
 }
 
+/// The metadata file, or None if it's missing, not a plain file, huge or unreadable:
+/// a damaged metadata file must never stop the notes from loading, and a symlink
+/// there must not be followed out of the notes folder.
+fn read_meta(path: &Path) -> Option<String> {
+    let m = fs::symlink_metadata(path).ok()?;
+    if !m.file_type().is_file() || m.len() > MAX_NOTE_BYTES {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A temp file name next to `path` that no other write is using.
 fn temp_beside(path: &Path) -> PathBuf {
-    let mut t = path.as_os_str().to_owned();
+    // A short fixed name in the same folder, so a note whose own name is close to
+    // the file system's limit can still be saved.
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    t.push(format!(".{}-{n}.tmp", std::process::id()));
-    PathBuf::from(t)
+    path.with_file_name(format!(".mn-{}-{n}.tmp", std::process::id()))
 }
 
 /// Write `contents` to `tmp` and make sure it reached the disk.
@@ -464,7 +487,7 @@ fn scan_root(root: &Path, known: &HashMap<String, u64>) -> Res<Scan> {
     scan_dirs(root, "", MAX_DEPTH, known, &mut dirs, &mut files)?;
     read_notes(root, TRASH_DIR, known, &mut files)?;
     dirs.sort_by_key(|d| d.to_lowercase());
-    let meta = read_opt(&root.join(META_FILE))?;
+    let meta = read_meta(&root.join(META_FILE));
     Ok(Scan { dirs, files, meta })
 }
 
@@ -506,6 +529,9 @@ fn rename_no_clobber(src: &Path, dst: &Path, from: &str, to: &str) -> Res<()> {
     }
     if fs::symlink_metadata(src).is_err() {
         return Err(format!("{NOT_FOUND}: {from}"));
+    }
+    if to.starts_with(&format!("{from}/")) {
+        return Err(format!("can't move {from} into itself"));
     }
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(err)?;
@@ -774,7 +800,9 @@ async fn history_clear(dir: State<'_, NotesDir>, paths: Vec<String>, since: Opti
 /// Clear version history for every note, from `since` on (or all time).
 #[tauri::command]
 async fn history_clear_all(dir: State<'_, NotesDir>, since: Option<u64>, dry_run: bool) -> Res<u64> {
-    Ok(clear_versions(&dir.root().join(HISTORY_DIR), since, dry_run, true))
+    let root = dir.root();
+    no_symlinks(&root, HISTORY_DIR)?;
+    Ok(clear_versions(&root.join(HISTORY_DIR), since, dry_run, true))
 }
 
 /// Forget a note's history (when the note is deleted for good, or a new note

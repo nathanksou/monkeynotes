@@ -43,7 +43,8 @@ interface Meta {
 }
 
 const FORBIDDEN = /[\\/:*?"<>|\u0000-\u001f]/g;
-const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
+/** Windows treats these as devices even with an extension (nul.txt). */
+const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i;
 /** How many other names to try when one is taken on disk. */
 const MAX_NAME_TRIES = 50;
 /** At most one stored version per note per this long. */
@@ -52,7 +53,8 @@ export const SNAPSHOT_EVERY_MS = 5 * 60 * 1000;
 /** Turn a title into something every OS accepts as a file or folder name. */
 export function safeName(title: string, fallback = "untitled"): string {
   let name = title.replace(FORBIDDEN, " ").replace(/\s+/g, " ").trim();
-  name = name.replace(/^\.+/, "").replace(/[. ]+$/, "").slice(0, 80).trim();
+  // Cut by code point so a long title never leaves half an emoji in the name.
+  name = Array.from(name.replace(/^\.+/, "")).slice(0, 80).join("").replace(/[. ]+$/, "").trim();
   if (!name) name = fallback;
   if (RESERVED.test(name)) name += "_";
   return name;
@@ -105,6 +107,8 @@ export class Vault {
   private originalName = new WeakMap<Note, string>();
   /** Requested file names for imported notes that haven't been written yet. */
   private nameHints = new WeakMap<Note, string>();
+
+  private metaBackedUp = false;
 
   constructor(private be: Backend) {}
 
@@ -174,6 +178,13 @@ export class Vault {
       const existing = byPath.get(f.path);
       if (existing) {
         seen.add(existing);
+        if (f.body !== null && existing.body !== f.body && (this.dirty.has(existing) || editedSince(existing))) {
+          // Our unsaved text wins, but never throw away what another app wrote.
+          if (f.body !== this.savedBody.get(existing)) {
+            const [path, body] = [f.path, f.body];
+            this.run("keep the other version", () => this.be.historySave(path, body));
+          }
+        }
         if (f.body !== null && existing.body !== f.body && !this.dirty.has(existing) && !editedSince(existing)) {
           existing.body = f.body;
           existing.updatedAt = f.modified;
@@ -190,6 +201,13 @@ export class Vault {
     // Files that disappeared; notes not yet on disk, failing to save or just edited stay.
     this.notes = this.notes.filter((n) => !n.path || seen.has(n) || this.dirty.has(n) || editedSince(n));
     this.rememberTimes(scan);
+    // Stars changed on another device: take them, unless we have changes of our own waiting to be saved.
+    if (scan.meta && !this.metaDirty && this.lastMeta === JSON.stringify(this.buildMeta())) {
+      const pinned = new Set(meta.pinned ?? []);
+      for (const n of this.notes) if (n.path && !n.deletedAt) n.starred = pinned.has(n.path) || undefined;
+      this.starredFolders = new Set((meta.starredFolders ?? []).filter((id) => this.folders.some((f) => f.id === id)));
+      this.lastMeta = JSON.stringify(this.buildMeta());
+    }
     if (this.metaIsStale(meta)) this.metaDirty = true;
     return openChanged;
   }
@@ -256,11 +274,19 @@ export class Vault {
   }
 
   private parseMeta(raw: string | null): Meta {
+    if (!raw) return {};
     try {
-      return raw ? (JSON.parse(raw) as Meta) : {};
+      const v: unknown = JSON.parse(raw);
+      if (v && typeof v === "object" && !Array.isArray(v)) return v as Meta;
     } catch {
-      return {};
+      // fall through
     }
+    // Unreadable: keep a copy before the next save replaces it.
+    if (!this.metaBackedUp) {
+      this.metaBackedUp = true;
+      this.run("back up unreadable metadata", () => this.be.write(META_FILE + ".bak", raw, false));
+    }
+    return {};
   }
 
   // ---------------------------------------------------------------- queue
@@ -583,6 +609,8 @@ export class Vault {
   restoreVersion(n: Note, body: string): void {
     if (n.deletedAt || body === n.body) return;
     this.lastSnapshot.delete(n); // always keep what's being replaced
+    const before = this.savedBody.get(n);
+    if (n.path && before !== n.body) this.savedBody.set(n, n.body); // include typing not yet saved
     this.setBody(n, body);
   }
 
@@ -618,7 +646,11 @@ export class Vault {
     this.folders = sortFolders([...this.folders, f]);
     this.pendingCreates.add(id);
     const done = () => this.pendingCreates.delete(id);
-    this.run("create folder", () => this.be.mkdir(id).finally(done), done);
+    const undo = () => {
+      done();
+      this.folders = this.folders.filter((x) => x.id !== id);
+    };
+    this.run("create folder", () => this.be.mkdir(id).finally(done), undo);
     return f;
   }
 

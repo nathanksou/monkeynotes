@@ -49,7 +49,7 @@ export class Editor {
     const ta = this.ta;
     ta.addEventListener("input", (e) => {
       const ie = e as InputEvent;
-      if (ie.inputType?.startsWith("insert")) {
+      if (ie.inputType?.startsWith("insert") && ie.inputType !== "insertCompositionText") {
         this.cb.onType(ie.data?.length ?? 1);
         this.pendingFx = ie.inputType === "insertLineBreak" ? "\n" : (ie.data?.slice(-1) ?? "");
       }
@@ -59,7 +59,7 @@ export class Editor {
       this.schedule();
     });
     ta.addEventListener("keydown", (e) => {
-      if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.key === "Tab" && !ta.readOnly && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         // execCommand keeps the native undo stack intact.
         document.execCommand("insertText", false, "\t");

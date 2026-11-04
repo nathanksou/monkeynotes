@@ -1334,3 +1334,18 @@ kbd {
 #stats-view {
   outline: none;
 }
+
+/* Respect the system "reduce motion" setting: no blinking, fading or flying effects. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  #fx {
+    display: none;
+  }
+}

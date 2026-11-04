@@ -45,14 +45,53 @@ export function findTheme(name: string): Theme {
   return themes.find((x) => x.name === wanted) ?? themes.find((x) => x.name === DEFAULT_THEME)!;
 }
 
+const rgb = (hex: string): [number, number, number] => {
+  const h = hex.replace("#", "");
+  const f = h.length === 3 ? h.replace(/./g, "$&$&") : h.slice(0, 6);
+  const n = parseInt(f, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+
+function luminance([r, g, b]: [number, number, number]): number {
+  const c = [r, g, b].map((v) => {
+    const x = v / 255;
+    return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+
+export function contrast(a: string, b: string): number {
+  const [x, y] = [luminance(rgb(a)), luminance(rgb(b))];
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+
+/**
+ * Keep a color readable on the background: if it falls short of `min`, mix it
+ * toward black or white (whichever helps) just far enough. Palettes that already
+ * pass are returned untouched, so themes look exactly like Monkeytype's.
+ */
+export function readable(color: string, bg: string, min: number): string {
+  if (!/^#([0-9a-f]{3}|[0-9a-f]{6})/i.test(color) || !/^#([0-9a-f]{3}|[0-9a-f]{6})/i.test(bg)) return color;
+  if (contrast(color, bg) >= min) return color;
+  const base = rgb(color);
+  const target = contrast("#000000", bg) >= contrast("#ffffff", bg) ? 0 : 255;
+  for (let k = 1; k <= 20; k++) {
+    const mixed = base.map((v) => Math.round(v + (target - v) * (k / 20)));
+    const hex = `#${mixed.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+    if (contrast(hex, bg) >= min) return hex;
+  }
+  return target ? "#ffffff" : "#000000";
+}
+
 export function applyTheme(theme: Theme): void {
   const s = document.documentElement.style;
   s.setProperty("--bg", theme.bg);
-  s.setProperty("--main", theme.main);
+  // Body text must be readable (4.5:1); the accent drives focus rings and icons (3:1).
+  s.setProperty("--main", readable(theme.main, theme.bg, 3));
   s.setProperty("--caret", theme.caret);
   s.setProperty("--sub", theme.sub);
   s.setProperty("--sub-alt", theme.subAlt);
-  s.setProperty("--text", theme.text);
+  s.setProperty("--text", readable(theme.text, theme.bg, 4.5));
   s.setProperty("--error", theme.error);
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme.bg);
 }

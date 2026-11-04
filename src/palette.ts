@@ -42,6 +42,15 @@ export class Palette {
     this.root = root;
     this.input = root.querySelector("input")!;
     this.list = root.querySelector(".palette-list")!;
+    root.setAttribute("role", "dialog");
+    root.setAttribute("aria-modal", "true");
+    root.setAttribute("aria-label", "settings and commands");
+    this.list.id = "palette-list";
+    this.list.setAttribute("role", "listbox");
+    this.input.setAttribute("role", "combobox");
+    this.input.setAttribute("aria-label", "search commands");
+    this.input.setAttribute("aria-controls", "palette-list");
+    this.input.setAttribute("aria-autocomplete", "list");
 
     this.input.addEventListener("input", () => {
       this.index = 0;
@@ -137,6 +146,7 @@ export class Palette {
       return this.prompt ? this.cancelAll() : this.back();
     }
     if (k === "Enter") {
+      if (e.isComposing) return; // Enter that commits an IME composition
       e.preventDefault();
       return this.choose();
     }
@@ -202,6 +212,8 @@ export class Palette {
     this.filtered.forEach((c, i) => {
       const li = document.createElement("li");
       li.dataset.i = String(i);
+      li.id = `palette-opt-${i}`;
+      li.setAttribute("role", "option");
       const label = document.createElement("span");
       label.className = "label";
       label.textContent = c.label + (c.sub ? "..." : "");
@@ -226,10 +238,15 @@ export class Palette {
   }
 
   private highlight(): void {
-    this.list.querySelectorAll("li.selected").forEach((el) => el.classList.remove("selected"));
+    this.list.querySelectorAll("li.selected").forEach((el) => {
+      el.classList.remove("selected");
+      el.setAttribute("aria-selected", "false");
+    });
     const li = this.list.querySelector<HTMLElement>(`li[data-i="${this.index}"]`);
     if (!li) return;
     li.classList.add("selected");
+    li.setAttribute("aria-selected", "true");
+    this.input.setAttribute("aria-activedescendant", li.id);
     li.scrollIntoView({ block: "nearest" });
     this.filtered[this.index]?.preview?.();
   }

@@ -27,6 +27,7 @@ export class Find {
     this.input.addEventListener("input", () => this.search(true));
     this.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
+        if (e.isComposing) return;
         e.preventDefault();
         this.step(e.shiftKey ? -1 : 1);
       } else if (e.key === "Escape") {

@@ -565,3 +565,14 @@ describe("review regressions", () => {
     expect(() => v.createFolder("too deep", parent)).toThrow(/8 deep/);
   });
 });
+
+describe("hardening", () => {
+  it("safeName never splits an emoji, ends in a dot, or yields a Windows device name", () => {
+    const long = safeName("a".repeat(79) + "😀 tail");
+    expect([...long].length).toBeLessThanOrEqual(80);
+    expect(long).not.toMatch(/[\ud800-\udbff]$/);
+    expect(safeName("a".repeat(79) + ". b")).not.toMatch(/[. ]$/);
+    expect(safeName("nul.txt")).toBe("nul.txt_");
+    expect(safeName("CON.backup")).toBe("CON.backup_");
+  });
+});

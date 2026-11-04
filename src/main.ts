@@ -558,6 +558,7 @@ async function showHistory(n: Note): Promise<void> {
     token++;
     try {
       const body = await vault.readVersion(n, at);
+      if (currentId !== n.id) return; // switched notes while it loaded
       vault.restoreVersion(n, body);
       previewing = true; // make showCurrent reload the restored text
       showCurrent();
@@ -769,7 +770,14 @@ async function openVault(): Promise<void> {
 /** Switch notes folders (`choose`: ask the user; otherwise go back to the default). */
 async function changeNotesDir(choose: boolean): Promise<void> {
   try {
-    if (vault) await vault.flush();
+    if (vault) {
+      const failedBefore = vault.failures;
+      await vault.flush();
+      if (vault.failures > failedBefore) {
+        toast("some notes haven't been saved yet, so the folder wasn't changed. try again in a moment");
+        return;
+      }
+    }
     if (choose) {
       if (!(await backend.chooseNotesDir())) return;
     } else {
@@ -777,7 +785,7 @@ async function changeNotesDir(choose: boolean): Promise<void> {
     }
     await openVault();
   } catch (e) {
-    toast(`couldn't open that folder: ${e}`);
+    toast(`couldn't open that folder: ${e}. restart monkeynotes to be safe`);
     return;
   }
   view().folderId = ALL;
@@ -1226,7 +1234,7 @@ function noteCommands(n: Note): Command[] {
         ]
       : []),
     { label: "export note", hint: ".md", run: () => void exportNote(n) },
-    { label: "copy note to clipboard", run: () => void navigator.clipboard.writeText(n.body) },
+    { label: "copy note to clipboard", run: () => navigator.clipboard.writeText(n.body).catch((e) => toast(`couldn't copy: ${e}`)) },
     { label: "delete note", hint: "moves it to the trash", run: () => trashNote(n) },
   ];
 }
@@ -1422,7 +1430,7 @@ function rootMenu(): Menu {
       ? [
           { label: "change notes folder", hint: notesDirPath, run: () => void changeNotesDir(true) },
           { label: "use default notes folder", run: () => void changeNotesDir(false) },
-          { label: "copy notes folder path", run: () => void navigator.clipboard.writeText(notesDirPath) },
+          { label: "copy notes folder path", run: () => navigator.clipboard.writeText(notesDirPath).catch((e) => toast(`couldn't copy: ${e}`)) },
           { label: "check for updates", hint: `v${VERSION}`, run: () => void checkUpdates(true) },
           {
             label: "check for updates on launch",
@@ -1440,11 +1448,19 @@ function openPalette(menu: Menu = rootMenu()): void {
 
 // ---------------------------------------------------------------- events
 
+let searchTimer = 0;
+
+// Widening the window with the drawer open must not leave the sidebar half-inert.
+narrow.addEventListener("change", () => {
+  els.app.classList.remove("drawer-open");
+  applyView();
+});
+
 function bindEvents(): void {
   const mod = (e: KeyboardEvent) => e.ctrlKey || e.metaKey;
 
   document.addEventListener("keydown", (e) => {
-    if (palette.isOpen) return;
+    if (palette.isOpen || e.isComposing) return;
     const k = e.key.toLowerCase();
     if (!els.statsView.hidden) {
       if (e.key === "Escape") {
@@ -1459,7 +1475,10 @@ function bindEvents(): void {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      if (document.activeElement === els.search) {
+      if (els.app.classList.contains("drawer-open")) {
+        els.app.classList.remove("drawer-open");
+        applyView();
+      } else if (document.activeElement === els.search) {
         // first esc clears the search, the next one leaves the box
         if (els.search.value) {
           els.search.value = "";
@@ -1625,9 +1644,11 @@ function bindEvents(): void {
       galleryNoteOpen = false;
       applyView();
     }
-    renderNotes();
+    clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(renderNotes, 90);
   });
   els.search.addEventListener("keydown", (e) => {
+    if (e.isComposing) return;
     if (e.key === "Enter" || e.key === "ArrowDown") {
       e.preventDefault();
       if (galleryShown()) return focusGallery();
@@ -1848,4 +1869,7 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+void main().catch((e) => {
+  document.body.classList.add("ready");
+  document.body.textContent = `monkeynotes couldn't start: ${e}`;
+});

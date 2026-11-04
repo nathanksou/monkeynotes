@@ -77,3 +77,15 @@ describe("paragraph helpers", () => {
     expect(starts(paras)).toEqual([0, 3, 4]);
   });
 });
+
+import { contrast, readable, themes } from "../src/themes";
+
+describe("theme legibility", () => {
+  it("keeps readable colors untouched and fixes unreadable ones", () => {
+    expect(readable("#ffffff", "#000000", 4.5)).toBe("#ffffff");
+    expect(contrast(readable("#eeeeee", "#ffffff", 4.5), "#ffffff")).toBeGreaterThanOrEqual(4.5);
+  });
+  it("every theme's text ends up at 4.5:1", () => {
+    for (const t of themes) expect(contrast(readable(t.text, t.bg, 4.5), t.bg), t.name).toBeGreaterThanOrEqual(4.5);
+  });
+});
