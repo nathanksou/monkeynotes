@@ -53,12 +53,10 @@ const els = {
   statsBar: $("#statsbar"),
   folders: $("#folders"),
   notesPane: $("#notes"),
-  topbar: $("#topbar"),
   footer: $("#footer"),
   gallery: $("#gallery"),
   galleryGrid: $("#gallery-grid"),
   galleryTitle: $("#gallery-title"),
-  gallerySearch: $<HTMLInputElement>("#gallery-search"),
   statsView: $("#stats-view"),
   decor: $("#decor"),
   fx: $("#fx"),
@@ -128,15 +126,24 @@ function lowerBody(n: Note): string {
   return lower;
 }
 
+const searchQuery = () => els.search.value.trim().toLowerCase();
+
+/**
+ * The notes to list: the open folder's, or while searching, every matching
+ * note in any folder (searching from the trash searches the trash).
+ */
 function notesInView(): Note[] {
   const { folderId } = view();
-  const q = els.search.value.trim().toLowerCase();
+  const q = searchQuery();
   return vault.notes
     .filter((n) => (folderId === TRASH ? !!n.deletedAt : !n.deletedAt))
-    .filter((n) => folderId === ALL || folderId === TRASH || n.folderId === folderId)
+    .filter((n) => q !== "" || folderId === ALL || folderId === TRASH || n.folderId === folderId)
     .filter((n) => !q || lowerBody(n).includes(q))
     .sort(sortNotes);
 }
+
+/** "work", or "results for “milk”" while searching. */
+const viewTitle = () => (searchQuery() ? `results for “${els.search.value.trim()}”` : folderName(view().folderId));
 
 // ---------------------------------------------------------------- rendering
 
@@ -292,7 +299,7 @@ function renderNotes(): void {
   const notes = notesInView();
   const trashFull = view().folderId === TRASH && notes.length > 0;
   for (const el of document.querySelectorAll<HTMLElement>(".trash-foot")) el.hidden = !trashFull;
-  els.notesTitle.textContent = folderName(view().folderId);
+  els.notesTitle.textContent = viewTitle();
   if (isGrid()) {
     renderGallery(notes);
     renderedOrder = [];
@@ -899,7 +906,7 @@ function applyView(): void {
   const foldersHidden = narrow.matches ? !els.app.classList.contains("drawer-open") : settings().hideFolders;
   els.folders.inert = foldersHidden;
   els.notesPane.inert = isGrid();
-  for (const el of [els.topbar, els.scroller, els.footer]) el.inert = galleryShown();
+  for (const el of [els.scroller, els.footer]) el.inert = galleryShown();
 }
 
 function setView(mode: "list" | "grid"): void {
@@ -925,6 +932,11 @@ function backToGallery(): void {
   applyView();
   renderNotes();
   focusGallery();
+}
+
+function focusSearch(): void {
+  els.search.focus();
+  els.search.select();
 }
 
 function focusGallery(): void {
@@ -955,8 +967,7 @@ function noteCard(n: Note): HTMLElement {
 }
 
 function renderGallery(notes: Note[] = notesInView()): void {
-  els.galleryTitle.textContent = folderName(view().folderId);
-  if (document.activeElement !== els.gallerySearch) els.gallerySearch.value = els.search.value;
+  els.galleryTitle.textContent = viewTitle();
   if (!notes.length) {
     const empty = document.createElement("div");
     empty.className = "gallery-empty";
@@ -1449,11 +1460,14 @@ function bindEvents(): void {
     if (e.key === "Escape") {
       e.preventDefault();
       if (document.activeElement === els.search) {
-        els.search.blur();
-        focusEditor();
-      } else if (document.activeElement === els.gallerySearch) {
-        els.gallerySearch.blur();
-        focusGallery();
+        // first esc clears the search, the next one leaves the box
+        if (els.search.value) {
+          els.search.value = "";
+          renderNotes();
+        } else {
+          els.search.blur();
+          restoreFocus();
+        }
       } else openPalette();
     } else if (mod(e) && (k === "k" || (e.shiftKey && k === "p"))) {
       e.preventDefault();
@@ -1475,23 +1489,14 @@ function bindEvents(): void {
       setView(k === "1" ? "list" : "grid");
     } else if (mod(e) && e.shiftKey && k === "f") {
       e.preventDefault();
-      if (isGrid()) {
-        if (galleryNoteOpen) backToGallery();
-        els.gallerySearch.focus();
-        els.gallerySearch.select();
-      } else {
-        els.search.focus();
-        els.search.select();
-      }
+      focusSearch();
     } else if (galleryShown() && !(document.activeElement instanceof HTMLInputElement) && !mod(e)) {
       galleryKey(e);
     } else if (mod(e) && k === "f") {
       e.preventDefault();
-      // in the gallery, ctrl+f searches the cards (there's no note open to search in)
-      if (galleryShown()) {
-        els.gallerySearch.focus();
-        els.gallerySearch.select();
-      } else if (current()) find.open();
+      // in the gallery there's no note open to search in: search all notes instead
+      if (galleryShown()) focusSearch();
+      else if (current()) find.open();
     } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault();
       stepNote(e.key === "ArrowUp" ? -1 : 1);
@@ -1611,23 +1616,21 @@ function bindEvents(): void {
     e.dataTransfer.setData("text/x-monkeynote", id);
     e.dataTransfer.effectAllowed = "move";
   });
-  els.gallerySearch.addEventListener("input", () => {
-    els.search.value = els.gallerySearch.value;
-    renderNotes();
-  });
-  els.gallerySearch.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      focusGallery();
-    }
-  });
   $("#new-folder").addEventListener("click", () => void newFolder());
   $("#open-palette").addEventListener("click", () => openPalette());
 
-  els.search.addEventListener("input", () => renderNotes());
+  els.search.addEventListener("input", () => {
+    // results show in the list, or as cards in gallery view
+    if (isGrid() && galleryNoteOpen) {
+      galleryNoteOpen = false;
+      applyView();
+    }
+    renderNotes();
+  });
   els.search.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === "ArrowDown") {
       e.preventDefault();
+      if (galleryShown()) return focusGallery();
       const first = notesInView()[0];
       if (first) openNote(first.id);
     }

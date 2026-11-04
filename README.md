@@ -8,7 +8,7 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 
 ## features
 
-- **organized like Apple Notes**: a folders sidebar (folders nest up to 8 levels deep) you can hide with the button in the corner, then either a **list view** (notes list next to the editor) or a **gallery view** (a grid of note cards; click one to open it full size, and the back arrow returns to the gallery). The first line of a note is its title, and the list is sorted by last edit, with starred notes on top.
+- **organized like Apple Notes**: a toolbar across the top (sidebar toggle on the left; list/gallery switch, new note, search and settings on the right), a folders sidebar (folders nest up to 8 levels deep), then either a **list view** (notes list next to the editor) or a **gallery view** (a grid of note cards; click one to open it full size, and the back arrow returns to the gallery). The first line of a note is its title, and the list is sorted by last edit, with starred notes on top.
 - **typing-test feel**: Roboto Mono and a custom smooth caret. Notes open at the top. If you like, `focus mode` fades the UI while you type (off by default).
 - **adjustable sidebars**: drag the folders sidebar's or the notes list's right edge to resize it (double-click the edge to reset).
 - **typing stats**: a stats bar under the editor shows live wpm, words and time typed today, your 30-day average and your daily streak. It stays visible while you type. Click it for a full stats view with a 14-day chart.
@@ -30,13 +30,13 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 
 | keys | action |
 | --- | --- |
-| `esc` / `ctrl+k` | command line |
+| `esc` / `ctrl+k` (or the gear) | command line: settings and every action |
 | `ctrl+n` | new note |
 | `ctrl+shift+n` | new folder |
 | `ctrl+p` | jump to note |
 | `ctrl+f` | find in note |
 | `ctrl+enter` / `ctrl+click` | follow the `[[link]]` under the caret |
-| `ctrl+shift+f` | search all notes |
+| `ctrl+shift+f` | search all notes (from any folder) |
 | `ctrl+\` | show / hide the folders sidebar |
 | `ctrl+1` / `ctrl+2` | list view / gallery view |
 | `alt+↑` / `alt+↓` | previous / next note |

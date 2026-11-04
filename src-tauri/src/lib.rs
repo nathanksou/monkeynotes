@@ -70,11 +70,11 @@ fn resolve(root: &Path, rel: &str) -> Res<PathBuf> {
     if cfg!(windows) && rel.contains(['\\', ':']) {
         return Err(format!("invalid path: {rel}"));
     }
-    // "a//b" and (on Windows) "a./b" or "a /b" are other spellings of real
+    // "a//b", "a/./b" and (on Windows) "a./b" or "a /b" are other spellings of real
     // paths; refuse them so every check below sees one canonical form.
     let aliased = rel
         .split('/')
-        .any(|seg| seg.is_empty() || (cfg!(windows) && (seg.ends_with('.') || seg.ends_with(' '))));
+        .any(|seg| seg.is_empty() || seg == "." || (cfg!(windows) && (seg.ends_with('.') || seg.ends_with(' '))));
     if aliased {
         return Err(format!("invalid path: {rel}"));
     }
