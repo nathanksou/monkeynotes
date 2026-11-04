@@ -177,11 +177,21 @@ export function markActive(): boolean {
 
 export function renderStats(): void {
   const n = current();
-  els.meta.textContent = n
-    ? n.deletedAt
-      ? "in the trash · restore it from the command line, or it's deleted after 30 days"
-      : `${folderPath(n.folderId)} · ${wordCount(n.body)} words · edited ${formatDate(n.updatedAt)}`
-    : "";
+  const part = (text: string) => {
+    const el = document.createElement("span");
+    el.textContent = text;
+    return el;
+  };
+  // folder, words | (typing stats) | last edited + version history, all in one line
+  els.meta.replaceChildren(
+    ...(n
+      ? n.deletedAt
+        ? [part("in the trash · restore it from the command line, or it's deleted after 30 days")]
+        : [part(folderPath(n.folderId)), part(`${wordCount(n.body)} words`)]
+      : []),
+  );
+  const edited = document.getElementById("note-edited");
+  if (edited) edited.textContent = n && !n.deletedAt ? `edited ${formatDate(n.updatedAt)}` : "";
   updateNoteButtons(n);
 }
 

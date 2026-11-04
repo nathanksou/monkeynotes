@@ -511,15 +511,21 @@ kbd {
   color: var(--sub);
   flex: none;
   white-space: nowrap;
-  /* one flowing line: note info and stats wrap onto more lines as the window narrows */
+  /* one flowing line, right-aligned: folder, words, wpm, avg wpm, last edited, version
+     history. It wraps onto more lines as the window narrows. */
   flex-wrap: wrap;
-  justify-content: flex-start;
+  justify-content: flex-end;
   gap: 0.3rem 1.1rem;
 }
 
+/* folder and word count join the footer's own flow */
 #note-meta {
+  display: contents;
+}
+
+#note-meta > * {
   flex: 0 1 auto;
-  white-space: normal; /* very narrow windows: wrap rather than cut it off */
+  white-space: normal; /* a long message (trash) wraps rather than being cut off */
   min-width: 0;
 }
 
@@ -761,7 +767,8 @@ kbd {
 }
 
 /* in focus mode the note info fades; the stats bar stays so you can watch it */
-#app.typing #note-meta {
+#app.typing #note-meta > *,
+#app.typing #note-edited {
   opacity: 0;
   transition: opacity 300ms;
 }
