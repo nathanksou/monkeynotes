@@ -1534,3 +1534,19 @@ kbd {
 .icon:active {
   transform: scale(0.92);
 }
+
+/* No visible scrollbars: they take width, so text re-wrapped when switching between
+   short and long notes. Scrolling (wheel, trackpad, keys) works as before. */
+#scroller,
+.list,
+#gallery-grid,
+.palette-list {
+  scrollbar-width: none;
+}
+
+#scroller::-webkit-scrollbar,
+.list::-webkit-scrollbar,
+#gallery-grid::-webkit-scrollbar,
+.palette-list::-webkit-scrollbar {
+  display: none;
+}
