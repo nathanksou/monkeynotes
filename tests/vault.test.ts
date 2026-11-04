@@ -340,3 +340,71 @@ describe("folder rename failures", () => {
     expect(reverted).toEqual([["projects", "work"]]);
   });
 });
+
+describe("version history", () => {
+  const MIN = 60 * 1000;
+  async function clocked(seed: Record<string, string>) {
+    const o = await open(seed);
+    let t = 1_000_000_000;
+    o.v.now = () => t;
+    return { ...o, tick: (ms: number) => (t += ms) };
+  }
+  const bodies = (be: MemoryBackend, path: string) =>
+    Object.entries(be.history[path] ?? {})
+      .sort(([a], [b]) => Number(b) - Number(a))
+      .map(([, body]) => body);
+
+  it("keeps the text from before an editing session, then at most one version per 5 minutes", async () => {
+    const { be, v, tick } = await clocked({ "plan.md": "plan\noriginal" });
+    const n = v.notes[0];
+    v.setBody(n, "plan\nedit 1");
+    await v.flush();
+    expect(bodies(be, "plan.md")).toEqual(["plan\noriginal"]);
+    tick(MIN);
+    v.setBody(n, "plan\nedit 2");
+    await v.flush();
+    expect(bodies(be, "plan.md")).toEqual(["plan\noriginal"]); // too soon for another
+    tick(5 * MIN);
+    v.setBody(n, "plan\nedit 3");
+    await v.flush();
+    expect(bodies(be, "plan.md")).toEqual(["plan\nedit 2", "plan\noriginal"]);
+  });
+
+  it("restoring keeps the replaced text as a version", async () => {
+    const { be, v, tick } = await clocked({ "plan.md": "plan\noriginal" });
+    const n = v.notes[0];
+    v.setBody(n, "plan\noops, deleted everything");
+    await v.flush();
+    tick(MIN);
+    const [at] = await v.versions(n);
+    v.restoreVersion(n, await v.readVersion(n, at));
+    await v.flush();
+    expect(be.files.get("plan.md")?.body).toBe("plan\noriginal");
+    expect(bodies(be, "plan.md")).toContain("plan\noops, deleted everything");
+  });
+
+  it("follows the note through renames, trash and folder renames, and goes when it's deleted", async () => {
+    const { be, v } = await clocked({ "ideas/plan.md": "plan\noriginal" });
+    const n = v.notes[0];
+    v.setBody(n, "roadmap\nrenamed by its title");
+    await v.flush();
+    expect(Object.keys(be.history)).toEqual(["ideas/roadmap.md"]);
+    v.renameFolder("ideas", "work");
+    await v.flush();
+    expect(Object.keys(be.history)).toEqual(["work/roadmap.md"]);
+    v.trash(n);
+    await v.flush();
+    expect(Object.keys(be.history)).toEqual([".trash/roadmap.md"]);
+    expect(await v.versions(n)).toHaveLength(1);
+    v.destroy(n);
+    await v.flush();
+    expect(Object.keys(be.history)).toEqual([]);
+  });
+
+  it("never stores a version when nothing changed or the old text was empty", async () => {
+    const { be, v } = await clocked({ "a.md": "" });
+    v.setBody(v.notes[0], "a\nfirst words");
+    await v.flush();
+    expect(be.history).toEqual({});
+  });
+});

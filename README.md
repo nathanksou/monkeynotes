@@ -18,6 +18,7 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 - **command line** (`esc` or `ctrl+k`): every action and setting is a few keystrokes away, including themes with live preview.
 - **189 themes**: Monkeytype's whole collection plus a couple of originals, with live preview, and `random theme` when you can't decide.
 - **plain markdown files**: every note is a `.md` file in a folder you choose, so you can sync it with iCloud, Dropbox or git, or open it in any other editor.
+- **version history**: before a note is overwritten, its previous text is kept, at most once every 5 minutes. `version history` in the command line lets you arrow through old versions with a live preview, and restoring one keeps the text it replaces.
 - **find in note** (`ctrl+f`): every match is highlighted; `enter` and `shift+enter` step through them.
 - **import / export**: bring in `.md` / `.txt` files or a whole folder, and export a single note or everything.
 - **local only**: no accounts, no sync service, no telemetry. The only network request is an optional once-a-day check of this repo's public releases, so the app can tell you when there's a new version. Turn it off with `check for updates on launch`.
@@ -50,6 +51,7 @@ monkeynotes/
   ideas/app idea.md           each subfolder is a folder in the app
   .trash/                     recently deleted (kept for 30 days)
   .monkeynotes.json           pins and trash bookkeeping
+  .monkeynotes/history/       older versions of each note (newest 50, up to 90 days)
 ```
 
 - A note made in the app is named after its first line, and the file is renamed when the title changes. Files you named yourself keep their names. Use `rename note` to pick a file name yourself.

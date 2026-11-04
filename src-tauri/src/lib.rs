@@ -37,6 +37,11 @@ const META_FILE: &str = ".monkeynotes.json";
 const MAX_DEPTH: u8 = 8;
 /// Bigger files are left alone: they're almost certainly not notes.
 const MAX_NOTE_BYTES: u64 = 8 * 1024 * 1024;
+/// Where note versions live, inside the notes folder.
+const HISTORY_DIR: &str = ".monkeynotes/history";
+/// Versions kept per note, and for how long.
+const HISTORY_KEEP: usize = 50;
+const HISTORY_MAX_AGE_MS: u64 = 90 * 24 * 60 * 60 * 1000;
 /// Error prefix the UI looks for to pick another name instead of overwriting.
 const EEXIST: &str = "EEXIST";
 
@@ -430,6 +435,124 @@ async fn remove_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
     }
 }
 
+// ------------------------------------------------------------------ version history
+//
+// <root>/.monkeynotes/history/<note path>/<unix ms>.md, e.g.
+// .monkeynotes/history/ideas/app idea.md/1793740000000.md
+// The note's own file name (with extension) is a folder here, so "a.md" and
+// "a.txt" never share a history.
+
+fn now_ms() -> u64 {
+    millis(Ok(SystemTime::now())).unwrap_or(0)
+}
+
+/// The history folder for a note (validated as a note path) or, for folder
+/// renames, a folder.
+fn history_dir(root: &Path, rel: &str, folder: bool) -> Res<PathBuf> {
+    if folder {
+        folder_path(root, rel)?;
+    } else {
+        note_path(root, rel, false)?;
+    }
+    Ok(root.join(HISTORY_DIR).join(rel))
+}
+
+/// Version timestamps in a history folder, newest first.
+fn versions_in(dir: &Path) -> Vec<u64> {
+    let mut out: Vec<u64> = match fs::read_dir(dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".md")?.parse().ok())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    out.sort_unstable_by(|a, b| b.cmp(a));
+    out
+}
+
+/// Keep the newest HISTORY_KEEP versions younger than HISTORY_MAX_AGE_MS.
+fn prune_history(dir: &Path, now: u64) {
+    for (i, at) in versions_in(dir).into_iter().enumerate() {
+        if i >= HISTORY_KEEP || now.saturating_sub(at) > HISTORY_MAX_AGE_MS {
+            let _ = fs::remove_file(dir.join(format!("{at}.md")));
+        }
+    }
+}
+
+fn save_version(root: &Path, path: &str, contents: &str, now: u64) -> Res<u64> {
+    let dir = history_dir(root, path, false)?;
+    // two saves in the same millisecond: take the next free one
+    let mut at = now;
+    while dir.join(format!("{at}.md")).exists() {
+        at += 1;
+    }
+    write_atomic(&dir.join(format!("{at}.md")), contents)?;
+    prune_history(&dir, now);
+    Ok(at)
+}
+
+/// Store `contents` as a version of the note at `path`. Returns its timestamp.
+#[tauri::command]
+async fn history_save(dir: State<'_, NotesDir>, path: String, contents: String) -> Res<u64> {
+    save_version(&dir.root(), &path, &contents, now_ms())
+}
+
+/// A note's versions, newest first.
+#[tauri::command]
+async fn history_list(dir: State<'_, NotesDir>, path: String) -> Res<Vec<u64>> {
+    Ok(versions_in(&history_dir(&dir.root(), &path, false)?))
+}
+
+#[tauri::command]
+async fn history_read(dir: State<'_, NotesDir>, path: String, at: u64) -> Res<String> {
+    let file = history_dir(&dir.root(), &path, false)?.join(format!("{at}.md"));
+    fs::read_to_string(file).map_err(err)
+}
+
+/// Move everything in `src` into `dst`, never replacing an entry already there.
+fn merge_dir(src: &Path, dst: &Path) -> Res<()> {
+    if !dst.exists() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(err)?;
+        }
+        return fs::rename(src, dst).map_err(err);
+    }
+    for entry in fs::read_dir(src).map_err(err)?.flatten() {
+        let target = dst.join(entry.file_name());
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            merge_dir(&entry.path(), &target)?;
+        } else if !target.exists() {
+            fs::rename(entry.path(), target).map_err(err)?;
+        }
+    }
+    let _ = fs::remove_dir_all(src);
+    Ok(())
+}
+
+fn move_history(root: &Path, from: &str, to: &str, folder: bool) -> Res<()> {
+    let src = history_dir(root, from, folder)?;
+    let dst = history_dir(root, to, folder)?;
+    if !src.exists() || src == dst {
+        return Ok(());
+    }
+    merge_dir(&src, &dst)
+}
+
+/// Move a note's history after it was renamed (or a folder's, with `folder`).
+#[tauri::command]
+async fn history_move(dir: State<'_, NotesDir>, from: String, to: String, folder: bool) -> Res<()> {
+    move_history(&dir.root(), &from, &to, folder)
+}
+
+/// Forget a note's history (when the note is deleted for good).
+#[tauri::command]
+async fn history_delete(dir: State<'_, NotesDir>, path: String) -> Res<()> {
+    match fs::remove_dir_all(history_dir(&dir.root(), &path, false)?) {
+        Err(e) if e.kind() != ErrorKind::NotFound => Err(err(e)),
+        _ => Ok(()),
+    }
+}
+
 // ------------------------------------------------------------------ import / export
 
 #[derive(Serialize)]
@@ -568,6 +691,11 @@ pub fn run() {
             import_dir,
             export_note,
             export_all,
+            history_save,
+            history_list,
+            history_read,
+            history_move,
+            history_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running monkeynotes");
@@ -645,6 +773,33 @@ mod tests {
         let known: HashMap<_, _> = first.files.iter().map(|f| (f.path.clone(), f.modified)).collect();
         let second = scan_root(&root, &known).unwrap();
         assert!(second.files.iter().all(|f| f.body.is_none()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn history_saves_lists_prunes_and_moves() {
+        let root = temp_root("history");
+        let day = 24 * 60 * 60 * 1000;
+        let now = 1_000 * day;
+        // 55 versions, one an hour; plus one that's too old
+        save_version(&root, "ideas/a.md", "ancient", now - 100 * day).unwrap();
+        for i in 0..55u64 {
+            save_version(&root, "ideas/a.md", &format!("v{i}"), now - (55 - i) * 3_600_000).unwrap();
+        }
+        let dir = history_dir(&root, "ideas/a.md", false).unwrap();
+        let list = versions_in(&dir);
+        assert_eq!(list.len(), HISTORY_KEEP);
+        assert_eq!(fs::read_to_string(dir.join(format!("{}.md", list[0]))).unwrap(), "v54");
+
+        move_history(&root, "ideas/a.md", "ideas/b.md", false).unwrap();
+        assert!(!dir.exists());
+        assert_eq!(versions_in(&history_dir(&root, "ideas/b.md", false).unwrap()).len(), HISTORY_KEEP);
+
+        move_history(&root, "ideas", "work", true).unwrap();
+        assert_eq!(versions_in(&history_dir(&root, "work/b.md", false).unwrap()).len(), HISTORY_KEEP);
+
+        assert!(history_dir(&root, "../escape.md", false).is_err());
+        assert!(history_dir(&root, ".git/x.md", false).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 

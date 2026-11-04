@@ -1044,3 +1044,20 @@ kbd {
     pointer-events: none;
   }
 }
+
+/* menus that preview something (themes, versions) leave the page visible */
+#palette.see-through {
+  align-items: flex-end;
+  padding: 0 0 4.5rem;
+  background: transparent;
+}
+
+#palette.see-through .palette-box {
+  box-shadow:
+    0 0 0 1px var(--sub),
+    0 12px 40px rgb(0 0 0 / 35%);
+}
+
+#palette.see-through .palette-list {
+  max-height: min(240px, 35vh);
+}

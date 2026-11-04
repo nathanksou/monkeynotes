@@ -19,6 +19,8 @@ export interface Menu {
   items: Command[];
   /** Called when the menu is left without choosing (used to undo previews). */
   onCancel?: () => void;
+  /** No dimming, and the box sits at the bottom, so previews behind it stay visible. */
+  seeThrough?: boolean;
 }
 
 interface PromptState {
@@ -173,6 +175,7 @@ export class Palette {
 
   private render(): void {
     if (this.prompt) {
+      this.root.classList.remove("see-through");
       this.input.placeholder = this.prompt.title;
       this.list.replaceChildren();
       return;
@@ -180,6 +183,7 @@ export class Palette {
     const menu = this.stack.at(-1);
     if (!menu) return;
     this.input.placeholder = menu.title;
+    this.root.classList.toggle("see-through", !!menu.seeThrough);
     const q = this.input.value.trim().toLowerCase();
     if (q) {
       // Exact substring matches first, then looser in-order matches.

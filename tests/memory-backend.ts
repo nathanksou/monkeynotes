@@ -102,6 +102,40 @@ export class MemoryBackend implements Backend {
     if ([...this.files.keys()].some(inside) || [...this.dirs].some(inside)) throw "not empty";
     this.dirs.delete(path);
   }
+  // version history: path -> { timestamp: text }
+  history: Record<string, Record<number, string>> = {};
+  async historySave(path: string, contents: string) {
+    let at = Date.now();
+    const h = (this.history[path] ??= {});
+    while (h[at] !== undefined) at++;
+    h[at] = contents;
+    const keep = Object.keys(h).map(Number).sort((a, b) => b - a).slice(0, 50);
+    for (const k of Object.keys(h).map(Number)) if (!keep.includes(k)) delete h[k];
+    
+    return at;
+  }
+  async historyList(path: string) {
+    return Object.keys(this.history[path] ?? {}).map(Number).sort((a, b) => b - a);
+  }
+  async historyRead(path: string, at: number) {
+    const v = this.history[path]?.[at];
+    if (v === undefined) throw `no version ${at} of ${path}`;
+    return v;
+  }
+  async historyMove(from: string, to: string, folder: boolean) {
+    for (const p of Object.keys(this.history)) {
+      const next = folder ? (p.startsWith(from + "/") ? to + p.slice(from.length) : p) : p === from ? to : p;
+      if (next !== p) {
+        this.history[next] = { ...this.history[p], ...(this.history[next] ?? {}) };
+        delete this.history[p];
+      }
+    }
+    
+  }
+  async historyDelete(path: string) {
+    delete this.history[path];
+    
+  }
   async importFiles() {
     return null;
   }

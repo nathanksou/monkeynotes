@@ -57,6 +57,15 @@ export interface Backend {
   mkdir(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
 
+  /** Store a version of the note at `path`; returns its timestamp. */
+  historySave(path: string, contents: string): Promise<number>;
+  /** Version timestamps for the note at `path`, newest first. */
+  historyList(path: string): Promise<number[]>;
+  historyRead(path: string, at: number): Promise<string>;
+  /** Move history after a note (or, with `folder`, a folder) was renamed. */
+  historyMove(from: string, to: string, folder: boolean): Promise<void>;
+  historyDelete(path: string): Promise<void>;
+
   /** Ask the user for note files to import. Null if cancelled. */
   importFiles(): Promise<ExtFile[] | null>;
   /** Ask the user for a folder to import. Null if cancelled (or unsupported). */
@@ -88,6 +97,12 @@ class TauriBackend implements Backend {
   remove = (path: string) => invoke<void>("remove_file", { path });
   mkdir = (path: string) => invoke<void>("make_dir", { path });
   rmdir = (path: string) => invoke<void>("remove_dir", { path });
+
+  historySave = (path: string, contents: string) => invoke<number>("history_save", { path, contents });
+  historyList = (path: string) => invoke<number[]>("history_list", { path });
+  historyRead = (path: string, at: number) => invoke<string>("history_read", { path, at });
+  historyMove = (from: string, to: string, folder: boolean) => invoke<void>("history_move", { from, to, folder });
+  historyDelete = (path: string) => invoke<void>("history_delete", { path });
 
   importFiles = () => invoke<ExtFile[] | null>("import_files");
   importDir = () => invoke<ExtDir | null>("import_dir");

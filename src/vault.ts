@@ -30,6 +30,8 @@ const FORBIDDEN = /[\\/:*?"<>|\u0000-\u001f]/g;
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
 /** How many other names to try when one is taken on disk. */
 const MAX_NAME_TRIES = 50;
+/** At most one stored version per note per this long. */
+export const SNAPSHOT_EVERY_MS = 5 * 60 * 1000;
 
 /** Turn a title into something every OS accepts as a file or folder name. */
 export function safeName(title: string, fallback = "untitled"): string {
@@ -73,6 +75,12 @@ export class Vault {
   /** Bumped on every in-memory edit; `edited` remembers each note's last bump. */
   private clock = 0;
   private edited = new WeakMap<Note, number>();
+  /** What each note's file held after its last load or save (the version to keep). */
+  private savedBody = new WeakMap<Note, string>();
+  /** When each note last had a version stored. */
+  private lastSnapshot = new WeakMap<Note, number>();
+  /** The clock, replaceable in tests. */
+  now: () => number = () => Date.now();
   /** Called when a folder rename fails on disk and is undone (old id, new id). */
   onFolderRenameReverted: (from: string, to: string) => void = () => {};
   /** Requested file names for imported notes that haven't been written yet. */
@@ -133,6 +141,7 @@ export class Vault {
         if (f.body !== null && existing.body !== f.body && !this.dirty.has(existing) && !editedSince(existing)) {
           existing.body = f.body;
           existing.updatedAt = f.modified;
+          this.savedBody.set(existing, f.body);
           if (existing.id === openId) openChanged = true;
         }
       } else if (f.body !== null) {
@@ -155,7 +164,7 @@ export class Vault {
   private fromFile(f: FileEntry, body: string, meta: Meta, pinned: Set<string>): Note {
     const inTrash = dirOf(f.path) === TRASH_DIR;
     const t = inTrash ? meta.trash?.[baseOf(f.path)] : undefined;
-    return {
+    const note: Note = {
       id: uid(),
       path: f.path,
       folderId: inTrash ? (t?.from ?? ROOT) : dirOf(f.path),
@@ -167,6 +176,8 @@ export class Vault {
       foreignTrash: inTrash && !t ? true : undefined,
       autoName: this.followsTitle(f.path, body),
     };
+    this.savedBody.set(note, body);
+    return note;
   }
 
   /** Whether a file's name should keep tracking its title. */
@@ -304,16 +315,20 @@ export class Vault {
     for (let attempt = 0; ; attempt++) {
       const from = n.path;
       const target = this.wantedPath(n);
+      const body = n.body;
       try {
         if (!from) {
-          await this.be.write(target, n.body, true);
+          await this.be.write(target, body, true);
         } else {
           if (from !== target) {
             await this.be.rename(from, target);
             this.movedTo(n, target);
+            await this.be.historyMove(from, target, false).catch((e) => this.onError(`moving history failed: ${e}`));
           }
-          await this.be.write(target, n.body, false);
+          await this.snapshot(n, target);
+          await this.be.write(target, body, false);
         }
+        this.savedBody.set(n, body);
         this.movedTo(n, target);
         this.nameHints.delete(n);
         this.mtimes.delete(target); // our own write: re-read it on the next reload
@@ -323,6 +338,24 @@ export class Vault {
         if (!isExists(e) || attempt >= MAX_NAME_TRIES) throw e;
         this.occupied.add(target.toLowerCase());
       }
+    }
+  }
+
+  /**
+   * Before a save replaces the file, keep what it held as a version: the text
+   * from before an editing session is always recoverable, and then at most one
+   * version per SNAPSHOT_EVERY_MS. A failure here never blocks the save.
+   */
+  private async snapshot(n: Note, path: string): Promise<void> {
+    const previous = this.savedBody.get(n);
+    if (previous === undefined || previous === n.body || previous.trim() === "") return;
+    const now = this.now();
+    if (now - (this.lastSnapshot.get(n) ?? -Infinity) < SNAPSHOT_EVERY_MS) return;
+    try {
+      await this.be.historySave(path, previous);
+      this.lastSnapshot.set(n, now);
+    } catch (e) {
+      this.onError(`saving a version failed: ${e}`);
     }
   }
 
@@ -440,13 +473,34 @@ export class Vault {
     this.metaDirty = true;
     // Read the path when the op runs: a queued save may still move the file first.
     this.run("delete", async () => {
-      if (n.path) await this.be.remove(n.path);
+      if (!n.path) return;
+      await this.be.remove(n.path);
+      await this.be.historyDelete(n.path).catch((e) => this.onError(`deleting history failed: ${e}`));
     });
     this.schedule();
   }
 
   emptyTrash(): void {
     for (const n of this.notes.filter((x) => x.deletedAt)) this.destroy(n);
+  }
+
+  // ---------------------------------------------------------------- versions
+
+  /** Stored versions of a note, newest first (saving pending changes first). */
+  async versions(n: Note): Promise<number[]> {
+    await this.flush();
+    return n.path ? this.be.historyList(n.path) : [];
+  }
+
+  readVersion(n: Note, at: number): Promise<string> {
+    return this.be.historyRead(n.path, at);
+  }
+
+  /** Put an old version back. The current text is kept as a version first. */
+  restoreVersion(n: Note, body: string): void {
+    if (n.deletedAt || body === n.body) return;
+    this.lastSnapshot.delete(n); // always keep what's being replaced
+    this.setBody(n, body);
   }
 
   // ---------------------------------------------------------------- folders
@@ -492,6 +546,7 @@ export class Vault {
       async () => {
         await this.be.rename(id, next);
         done();
+        await this.be.historyMove(id, next, true).catch((e) => this.onError(`moving history failed: ${e}`));
         for (const n of this.notes) if (n.path && !n.deletedAt) n.path = swapPrefix(n.path, id, next);
         this.metaDirty = true;
       },

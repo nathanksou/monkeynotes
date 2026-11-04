@@ -372,6 +372,80 @@ function setTitleMode(mode: TitleSource): void {
   renderAll();
 }
 
+// ---------------------------------------------------------------- version history
+
+/** "today 3:42 pm", "yesterday 9:05 am", "nov 2 11:30 pm" */
+function versionLabel(at: number): string {
+  const time = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
+  const day = formatDate(at);
+  return /\d:\d/.test(day) ? `today ${time}` : `${day} ${time}`;
+}
+
+/** Browse a note's versions in the command line: arrowing previews, enter restores. */
+async function showHistory(n: Note): Promise<void> {
+  let list: number[];
+  try {
+    list = await vault.versions(n);
+  } catch (e) {
+    toast(`couldn't read version history: ${e}`);
+    return;
+  }
+  if (!list.length) {
+    toast("no earlier versions yet. they're kept as you edit, at most one every 5 minutes");
+    return;
+  }
+  let token = 0;
+  let previewing = false;
+  const showCurrent = () => {
+    token++;
+    if (!previewing) return;
+    previewing = false;
+    editor.load(n.body, { caretAt: "start" });
+    paintLinks();
+    renderStats();
+  };
+  const preview = (at: number) => {
+    const t = ++token;
+    vault
+      .readVersion(n, at)
+      .then((body) => {
+        if (t !== token || currentId !== n.id) return;
+        previewing = true;
+        editor.load(body, { readOnly: true, caretAt: "start" });
+        paintLinks();
+        els.meta.textContent = `version from ${versionLabel(at)} · ${wordCount(body)} words · enter to restore it`;
+      })
+      .catch((e) => toast(`couldn't read that version: ${e}`));
+  };
+  const restore = async (at: number) => {
+    token++;
+    try {
+      const body = await vault.readVersion(n, at);
+      vault.restoreVersion(n, body);
+      previewing = true; // make showCurrent reload the restored text
+      showCurrent();
+      renderAll();
+      toast(`restored the version from ${versionLabel(at)}. the text it replaced is in version history too`);
+    } catch (e) {
+      showCurrent();
+      toast(`couldn't restore that version: ${e}`);
+    }
+  };
+  openPalette({
+    title: `version history · ${noteTitle(n)}`,
+    seeThrough: true,
+    onCancel: showCurrent,
+    items: [
+      { label: "current version", active: true, preview: showCurrent, run: showCurrent },
+      ...list.map((at) => ({
+        label: versionLabel(at),
+        preview: () => preview(at),
+        run: () => void restore(at),
+      })),
+    ],
+  });
+}
+
 // ---------------------------------------------------------------- folder actions
 
 async function newFolder(parent: string = ROOT): Promise<void> {
@@ -695,6 +769,7 @@ function themeMenu(): Menu {
   const active = findTheme(original).name;
   return {
     title: `theme (${themes.length})`,
+    seeThrough: true,
     onCancel: () => applyTheme(findTheme(original)),
     items: themes.map((t) => ({
       label: t.name,
@@ -731,6 +806,7 @@ function noteCommands(n: Note): Command[] {
         items: vault.folders.map((f) => ({ label: folderPath(f.id), active: f.id === n.folderId, run: () => moveNote(n, f.id) })),
       }),
     },
+    ...(n.path ? [{ label: "version history", hint: "browse and restore", run: () => void showHistory(n) }] : []),
     { label: "export note", hint: ".md", run: () => void exportNote(n) },
     { label: "copy note to clipboard", run: () => void navigator.clipboard.writeText(n.body) },
     { label: "delete note", hint: "moves to recently deleted", run: () => trashNote(n) },

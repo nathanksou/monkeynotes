@@ -21,10 +21,51 @@ export class BrowserBackend implements Backend {
     try {
       const raw = JSON.parse(localStorage.getItem(this.key) ?? "null");
       if (raw) ({ files: this.files, dirs: this.dirs } = raw);
+      this.history = JSON.parse(localStorage.getItem("monkeynotes:history") ?? "{}");
     } catch {
       /* start empty */
     }
   }
+
+  private saveHistory(): void {
+    localStorage.setItem("monkeynotes:history", JSON.stringify(this.history));
+  }
+
+  // version history: path -> { timestamp: text }
+  history: Record<string, Record<number, string>> = {};
+  async historySave(path: string, contents: string) {
+    let at = Date.now();
+    const h = (this.history[path] ??= {});
+    while (h[at] !== undefined) at++;
+    h[at] = contents;
+    const keep = Object.keys(h).map(Number).sort((a, b) => b - a).slice(0, 50);
+    for (const k of Object.keys(h).map(Number)) if (!keep.includes(k)) delete h[k];
+    this.saveHistory();
+    return at;
+  }
+  async historyList(path: string) {
+    return Object.keys(this.history[path] ?? {}).map(Number).sort((a, b) => b - a);
+  }
+  async historyRead(path: string, at: number) {
+    const v = this.history[path]?.[at];
+    if (v === undefined) throw `no version ${at} of ${path}`;
+    return v;
+  }
+  async historyMove(from: string, to: string, folder: boolean) {
+    for (const p of Object.keys(this.history)) {
+      const next = folder ? (p.startsWith(from + "/") ? to + p.slice(from.length) : p) : p === from ? to : p;
+      if (next !== p) {
+        this.history[next] = { ...this.history[p], ...(this.history[next] ?? {}) };
+        delete this.history[p];
+      }
+    }
+    this.saveHistory();
+  }
+  async historyDelete(path: string) {
+    delete this.history[path];
+    this.saveHistory();
+  }
+
 
   private persist(): void {
     localStorage.setItem(this.key, JSON.stringify({ files: this.files, dirs: this.dirs }));
