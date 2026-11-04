@@ -83,15 +83,37 @@ export function readable(color: string, bg: string, min: number): string {
   return target ? "#ffffff" : "#000000";
 }
 
+/**
+ * The theme as it is actually shown: text and error readable (4.5:1), accent and
+ * secondary text/icons visible (3:1) on the background. Colors that already pass
+ * are left exactly as the palette has them.
+ */
+export function guardTheme(theme: Theme): Theme {
+  const sub = readable(theme.sub, theme.bg, 3);
+  let subAlt = theme.subAlt;
+  // Panels (sub-alt) sit between the background and the secondary color: if the
+  // palette had it stronger than the lifted sub, step it back toward the background.
+  if (contrast(subAlt, theme.bg) > contrast(sub, theme.bg)) subAlt = sub;
+  return {
+    ...theme,
+    main: readable(theme.main, theme.bg, 3),
+    sub,
+    subAlt,
+    text: readable(theme.text, theme.bg, 4.5),
+    error: readable(theme.error, theme.bg, 4.5),
+  };
+}
+
 export function applyTheme(theme: Theme): void {
+  const g = guardTheme(theme);
   const s = document.documentElement.style;
-  s.setProperty("--bg", theme.bg);
+  s.setProperty("--bg", g.bg);
   // Body text must be readable (4.5:1); the accent drives focus rings and icons (3:1).
-  s.setProperty("--main", readable(theme.main, theme.bg, 3));
-  s.setProperty("--caret", theme.caret);
-  s.setProperty("--sub", theme.sub);
-  s.setProperty("--sub-alt", theme.subAlt);
-  s.setProperty("--text", readable(theme.text, theme.bg, 4.5));
-  s.setProperty("--error", theme.error);
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme.bg);
+  s.setProperty("--main", g.main);
+  s.setProperty("--caret", g.caret);
+  s.setProperty("--sub", g.sub);
+  s.setProperty("--sub-alt", g.subAlt);
+  s.setProperty("--text", g.text);
+  s.setProperty("--error", g.error);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", g.bg);
 }

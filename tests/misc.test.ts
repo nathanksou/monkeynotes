@@ -89,3 +89,11 @@ describe("theme legibility", () => {
     for (const t of themes) expect(contrast(readable(t.text, t.bg, 4.5), t.bg), t.name).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe("isNewer with pre-releases", () => {
+  it("treats the final release as newer than its beta", () => {
+    expect(isNewer("v0.4.0", "0.4.0-beta.1")).toBe(true);
+    expect(isNewer("v0.4.0-beta.2", "0.4.0")).toBe(false);
+    expect(isNewer("v0.4.1", "0.4.0")).toBe(true);
+  });
+});

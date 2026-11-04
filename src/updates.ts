@@ -18,7 +18,8 @@ export function isNewer(candidate: string, current: string): boolean {
   const a = parse(candidate);
   const b = parse(current);
   for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
-  return false;
+  // Same numbers: the final release is newer than a pre-release such as 0.4.0-beta.1.
+  return /-/.test(current) && !/-/.test(candidate);
 }
 
 /** The latest release if it is newer than this build, otherwise null. */

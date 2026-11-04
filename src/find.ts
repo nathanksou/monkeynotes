@@ -148,7 +148,7 @@ export class Find {
     const mark = this.layer.el.querySelector<HTMLElement>("mark.current");
     if (!mark) return;
     const s = this.scroller;
-    const top = mark.offsetTop + (this.layer.el.offsetParent as HTMLElement).offsetTop;
+    const top = mark.offsetTop + ((this.layer.el.offsetParent as HTMLElement | null)?.offsetTop ?? 0);
     if (top < s.scrollTop + 40 || top > s.scrollTop + s.clientHeight - 80) {
       s.scrollTop = top - s.clientHeight / 3;
     }

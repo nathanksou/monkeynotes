@@ -66,6 +66,26 @@ export function sortFolders(folders: Folder[]): Folder[] {
   return [...folders].sort((a, b) => (a.id === ROOT ? -1 : b.id === ROOT ? 1 : key(a.id) < key(b.id) ? -1 : 1));
 }
 
+/** Keep only well-formed fields of a metadata file; anything else is ignored rather than crashing a load. */
+function cleanMeta(raw: Record<string, unknown>): Meta {
+  const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined);
+  const meta: Meta = { pinned: strings(raw.pinned), starredFolders: strings(raw.starredFolders) };
+  if (raw.trash && typeof raw.trash === "object" && !Array.isArray(raw.trash)) {
+    meta.trash = {};
+    for (const [name, e] of Object.entries(raw.trash)) {
+      const t = e as Partial<TrashEntry> | null;
+      if (!t || typeof t !== "object" || typeof t.deletedAt !== "number") continue;
+      meta.trash[name] = {
+        from: typeof t.from === "string" ? t.from : ROOT,
+        deletedAt: t.deletedAt,
+        ...(typeof t.name === "string" ? { name: t.name } : {}),
+        ...(typeof t.size === "number" ? { size: t.size } : {}),
+      };
+    }
+  }
+  return meta;
+}
+
 export class Vault {
   folders: Folder[] = [];
   notes: Note[] = [];
@@ -156,14 +176,17 @@ export class Vault {
    * it was reading always keep their in-memory text.
    */
   async reload(openId: string | null): Promise<boolean> {
-    await this.flush();
+    // Scan before saving: if another app changed a file we have unsaved edits
+    // for, reconcile keeps its version in history before our save replaces it.
     const mark = this.clock;
     const result = this.queue.then(async () => {
       const scan = await this.be.scan(Object.fromEntries(this.mtimes));
       return this.reconcile(scan, openId, mark);
     });
     this.queue = result.catch(() => undefined);
-    return result;
+    const changed = await result;
+    await this.flush();
+    return changed;
   }
 
   private reconcile(scan: Scan, openId: string | null, mark: number): boolean {
@@ -277,14 +300,23 @@ export class Vault {
     if (!raw) return {};
     try {
       const v: unknown = JSON.parse(raw);
-      if (v && typeof v === "object" && !Array.isArray(v)) return v as Meta;
+      if (v && typeof v === "object" && !Array.isArray(v)) return cleanMeta(v as Record<string, unknown>);
     } catch {
       // fall through
     }
     // Unreadable: keep a copy before the next save replaces it.
     if (!this.metaBackedUp) {
       this.metaBackedUp = true;
-      this.run("back up unreadable metadata", () => this.be.write(META_FILE + ".bak", raw, false));
+      this.run("back up unreadable metadata", async () => {
+        // never replace an earlier backup: that may be the only good copy
+        for (let i = 0; i < 10; i++) {
+          try {
+            return await this.be.write(META_FILE + (i ? `.bak${i + 1}` : ".bak"), raw, true);
+          } catch (e) {
+            if (!isExists(e)) throw e;
+          }
+        }
+      });
     }
     return {};
   }
@@ -555,7 +587,7 @@ export class Vault {
     if (!n.deletedAt) return;
     n.deletedAt = undefined;
     n.foreignTrash = undefined;
-    if (!this.folders.some((f) => f.id === n.folderId)) n.folderId = ROOT;
+    if (!this.ensureFolder(n.folderId)) n.folderId = ROOT;
     // back under its old file name (not "x 2", which it may have had in the trash)
     const name = this.originalName.get(n);
     if (name !== undefined && !n.autoName) this.nameHints.set(n, name);
@@ -636,6 +668,39 @@ export class Vault {
     }
   }
 
+  /**
+   * Make sure folder `id` exists (recreating it, and any missing parents, under
+   * exactly that name). False if the id can't be a folder here.
+   */
+  private ensureFolder(id: string): boolean {
+    if (id === ROOT || this.folders.some((f) => f.id === id)) return true;
+    const parts = id.split("/");
+    if (parts.length > MAX_FOLDER_DEPTH || parts.some((p) => !p || p === TRASH_DIR || safeName(p, "folder") !== p)) return false;
+    for (let i = 1; i <= parts.length; i++) {
+      const dir = parts.slice(0, i).join("/");
+      if (this.folders.some((f) => f.id === dir)) continue;
+      this.folders = sortFolders([...this.folders, { id: dir, name: baseOf(dir) }]);
+      this.pendingCreates.add(dir);
+      const done = () => this.pendingCreates.delete(dir);
+      this.run(
+        "create folder",
+        () => this.be.mkdir(dir).finally(done),
+        () => {
+          // couldn't make it: the notes that were headed there go to the top folder
+          done();
+          this.folders = this.folders.filter((f) => f.id !== dir && !f.id.startsWith(dir + "/"));
+          for (const n of this.notes) {
+            if (!n.deletedAt && (n.folderId === dir || n.folderId.startsWith(dir + "/"))) {
+              n.folderId = ROOT;
+              this.touch(n);
+            }
+          }
+        },
+      );
+    }
+    return true;
+  }
+
   /** Throws if the new folder would be nested deeper than MAX_FOLDER_DEPTH. */
   createFolder(name: string, parent: string = ROOT): Folder {
     if (parent && parent.split("/").length >= MAX_FOLDER_DEPTH) {
@@ -696,8 +761,8 @@ export class Vault {
     const ids = this.subtree(id);
     const affected = this.notes.filter((x) => ids.includes(x.folderId));
     for (const n of affected) {
+      // folderId stays: it is where the note goes back to when restored
       if (!n.deletedAt) this.trash(n);
-      n.folderId = ROOT;
     }
     this.folders = this.folders.filter((f) => !ids.includes(f.id));
     for (const x of ids) this.starredFolders.delete(x);

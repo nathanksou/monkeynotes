@@ -151,9 +151,38 @@ export function normalizeState(raw: unknown): AppState {
   };
 }
 
-/** The first non-empty line, without a leading "#" heading marker. Stops reading at that line. */
+/**
+ * A YAML front matter block at the very top ("---", key: value lines, "---").
+ * Returns where the text after it starts and its `title:` value, if any.
+ * Without a closing line it isn't front matter (a lone "---" is just a rule).
+ */
+function frontMatter(body: string): { end: number; title: string } | null {
+  const bom = body.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const open = /^---[ \t]*\r?\n/.exec(body.slice(bom));
+  if (!open) return null;
+  let title = "";
+  let start = bom + open[0].length;
+  while (start <= body.length) {
+    const nl = body.indexOf("\n", start);
+    const line = body.slice(start, nl === -1 ? undefined : nl).replace(/\r$/, "");
+    if (/^(---|\.\.\.)[ \t]*$/.test(line)) return { end: nl === -1 ? body.length : nl + 1, title };
+    const m = /^title[ \t]*:[ \t]*(.*)$/i.exec(line);
+    if (m && !title) title = m[1].trim().replace(/^(["'])(.*)\1$/, "$2").trim();
+    if (nl === -1) return null;
+    start = nl + 1;
+  }
+  return null;
+}
+
+/**
+ * The first non-empty line, without a leading "#" heading marker. A YAML front
+ * matter block is skipped: its `title:` key wins, otherwise the first real line
+ * after it. Stops reading at that line.
+ */
 export function titleLine(body: string): string {
-  let start = 0;
+  const fm = frontMatter(body);
+  if (fm?.title) return fm.title;
+  let start = fm ? fm.end : 0;
   while (start <= body.length) {
     const end = body.indexOf("\n", start);
     const line = body.slice(start, end === -1 ? undefined : end);
@@ -189,10 +218,19 @@ export function noteTitle(n: Note): string {
 }
 
 export function notePreview(n: Note): string {
-  const lines = firstLines(n.body, 2);
+  const fm = frontMatter(n.body);
+  const lines = firstLines(fm ? n.body.slice(fm.end) : n.body, 2);
   // In file-name mode the first line isn't the title, so it is the preview,
-  // unless it just repeats the title as a heading.
-  const skip = titleSource === "file name" && n.path ? (titleLine(lines[0] ?? "") === noteTitle(n) ? 1 : 0) : 1;
+  // unless it just repeats the title as a heading. A title taken from the front
+  // matter's title: key doesn't use up a content line either.
+  const fromKey = !!fm?.title && !(titleSource === "file name" && n.path);
+  const skip = fromKey
+    ? 0
+    : titleSource === "file name" && n.path
+      ? titleLine(lines[0] ?? "") === noteTitle(n)
+        ? 1
+        : 0
+      : 1;
   return (lines[skip] ?? "").trim().slice(0, 120);
 }
 

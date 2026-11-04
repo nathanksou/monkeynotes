@@ -91,6 +91,7 @@ export class Palette {
 
   /** Ask for a line of text. Resolves null if cancelled. */
   ask(title: string, initial: string, returnFocus: () => void): Promise<string | null> {
+    this.prompt?.resolve(null); // a prompt that is replaced counts as cancelled
     return new Promise((resolve) => {
       this.stack = [];
       this.prompt = { title, resolve };

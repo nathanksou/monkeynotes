@@ -56,8 +56,10 @@ button {
 kbd {
   font-family: var(--ui-font);
   font-size: 0.7rem;
-  background: var(--sub);
-  color: var(--bg);
+  /* text and border are both guarded against --bg (4.5:1 and 3:1) */
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--sub);
   padding: 0.1rem 0.35rem;
   border-radius: 0.25rem;
 }
@@ -86,6 +88,9 @@ kbd {
   transition:
     grid-template-columns 250ms ease,
     opacity 250ms;
+  --folders-w: var(--folders-size, 200px);
+  --notes-w: var(--notes-size, 280px);
+  grid-template-columns: var(--folders-w) var(--notes-w) 1fr;
 }
 
 .pane {
@@ -94,7 +99,7 @@ kbd {
   min-width: 0;
   overflow: hidden;
   font-size: 0.85rem;
-  transition: opacity 300ms;
+  position: relative;
 }
 
 #folders,
@@ -154,6 +159,8 @@ kbd {
 
 .icon {
   color: var(--sub);
+  display: grid;
+  place-items: center;
   font-size: 1.3rem;
   line-height: 1;
   width: 1.75rem;
@@ -945,12 +952,6 @@ kbd {
 
 /* ------------------------------------------------------------ layout: sidebar, list, gallery */
 
-#app {
-  --folders-w: var(--folders-size, 200px);
-  --notes-w: var(--notes-size, 280px);
-  grid-template-columns: var(--folders-w) var(--notes-w) 1fr;
-}
-
 #app.hide-folders {
   --folders-w: 0px;
 }
@@ -964,17 +965,6 @@ kbd {
 #app.grid #notes {
   opacity: 0;
   pointer-events: none;
-}
-
-.pane-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.icon {
-  display: grid;
-  place-items: center;
 }
 
 .icon svg {
@@ -1062,7 +1052,6 @@ kbd {
 .card {
   min-width: 0;
   cursor: pointer;
-  outline: none;
   user-select: none;
 }
 
@@ -1168,10 +1157,6 @@ kbd {
 }
 
 /* ------------------------------------------------------------ resizable sidebars */
-
-.pane {
-  position: relative;
-}
 
 .resize-handle {
   position: absolute;
@@ -1322,7 +1307,22 @@ kbd {
 }
 
 #search:focus-visible {
-  box-shadow: 0 0 0 1px var(--main);
+  outline: 2px solid var(--main);
+  outline-offset: 1px;
+}
+
+.card:focus-visible {
+  outline: 2px solid var(--main);
+  outline-offset: 3px;
+}
+
+.palette-box input:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--main);
+}
+
+#find:focus-within {
+  outline: 2px solid var(--main);
+  outline-offset: 1px;
 }
 
 .icon:focus-visible,

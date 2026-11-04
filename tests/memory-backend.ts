@@ -9,7 +9,23 @@ export class MemoryBackend implements Backend {
   duringScan: (() => void) | null = null;
   /** Make the next write to a path fail, as a full disk or locked file would. */
   failWrites = new Set<string>();
+  /** Make an operation fail until removed: "mkdir", "historySave", "remove", ... or "op:path". */
+  failing = new Set<string>();
+  /** Behave like Windows / macOS: names differ only by case are the same file. */
+  caseInsensitive = false;
   private clock = 1_000_000;
+
+  private check(op: string, path: string): void {
+    if (this.failing.has(op) || this.failing.has(`${op}:${path}`)) throw `${op} failed (simulated)`;
+  }
+
+  /** The stored key that `path` refers to (matching case-insensitively when asked to). */
+  private key(path: string): string | undefined {
+    if (this.files.has(path)) return path;
+    if (!this.caseInsensitive) return undefined;
+    const low = path.toLowerCase();
+    return [...this.files.keys()].find((k) => k.toLowerCase() === low);
+  }
 
   constructor(seed: Record<string, string> = {}, modified?: number) {
     for (const [path, body] of Object.entries(seed)) this.put(path, body, modified);
@@ -73,9 +89,11 @@ export class MemoryBackend implements Backend {
     };
   }
   async write(path: string, body: string, createNew: boolean) {
+    this.check("write", path);
     if (this.failWrites.delete(path)) throw "disk full";
-    if (createNew && this.files.has(path)) throw `EEXIST: ${path}`;
-    this.put(path, body);
+    if (createNew && this.key(path) !== undefined) throw `EEXIST: ${path}`;
+    const existing = this.key(path);
+    this.put(existing ?? path, body);
   }
   async rename(from: string, to: string) {
     const swap = (p: string) => (p === from ? to : p.startsWith(from + "/") ? to + p.slice(from.length) : p);
@@ -85,16 +103,20 @@ export class MemoryBackend implements Backend {
       this.files = new Map([...this.files].map(([p, f]) => [swap(p), f]));
       return;
     }
-    if (this.files.has(to)) throw `EEXIST: ${to}`;
+    this.check("rename", from);
+    const clash = this.key(to);
+    if (clash !== undefined && !(this.caseInsensitive && clash === from)) throw `EEXIST: ${to}`;
     const f = this.files.get(from);
     if (!f) throw `NOT_FOUND: ${from}`;
     this.files.delete(from);
     this.files.set(to, f);
   }
   async remove(path: string) {
+    this.check("remove", path);
     this.files.delete(path);
   }
   async mkdir(path: string) {
+    this.check("mkdir", path);
     this.dirs.add(path);
   }
   async rmdir(path: string) {
@@ -105,6 +127,7 @@ export class MemoryBackend implements Backend {
   // version history: path -> { timestamp: text }
   history: Record<string, Record<number, string>> = {};
   async historySave(path: string, contents: string) {
+    this.check("historySave", path);
     let at = Date.now();
     const h = (this.history[path] ??= {});
     while (h[at] !== undefined) at++;
