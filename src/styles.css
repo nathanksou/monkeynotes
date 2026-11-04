@@ -171,7 +171,8 @@ kbd {
   border-radius: var(--radius);
   transition:
     color var(--speed),
-    background var(--speed);
+    background var(--speed),
+    transform 90ms ease-out;
 }
 
 .icon:hover {
@@ -1002,6 +1003,28 @@ kbd {
   pointer-events: none;
 }
 
+/* the folders sidebar slides shut and open: the column eases to its new width while the
+   pane fades. visibility waits for the fade when hiding and flips at once when showing. */
+#app.sidebar-anim {
+  transition: grid-template-columns 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+#app #folders {
+  transition:
+    opacity 200ms ease,
+    visibility 0s linear 200ms;
+}
+
+#app:not(.hide-folders) #folders {
+  transition:
+    opacity 200ms ease 40ms,
+    visibility 0s;
+}
+
+#app.hide-folders #folders {
+  opacity: 0;
+}
+
 /* switching list <-> gallery: only the list box and the card grid fade in */
 #app.switching #note-list,
 #app.switching #gallery-grid {
@@ -1160,6 +1183,10 @@ kbd {
   #app #folders {
     opacity: 0;
     pointer-events: none;
+    transform: translateX(-1.5rem);
+    transition:
+      opacity 200ms ease,
+      transform 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
   #app.drawer-open #folders {
     position: fixed;
@@ -1169,6 +1196,7 @@ kbd {
     z-index: 5;
     width: min(260px, 80vw);
     opacity: 1;
+    transform: none;
     pointer-events: auto;
     background: var(--bg);
     box-shadow: 0 0 40px rgb(0 0 0 / 45%);
@@ -1474,4 +1502,49 @@ kbd {
 #footer .icon svg {
   width: 0.85rem;
   height: 0.85rem;
+}
+
+/* ------------------------------------------------------------ small motions */
+
+/* the star pops when a note is starred */
+#star-note.on svg {
+  animation: star-pop 280ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+@keyframes star-pop {
+  from {
+    transform: scale(0.6) rotate(-25deg);
+  }
+  60% {
+    transform: scale(1.25) rotate(8deg);
+  }
+}
+
+/* toast rises into place; the command line and stats panel ease in */
+#toast {
+  animation: toast-in 180ms ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0.6rem);
+  }
+}
+
+.palette-box,
+.stats-box {
+  animation: box-in 140ms ease-out;
+}
+
+@keyframes box-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.4rem) scale(0.985);
+  }
+}
+
+/* buttons dip slightly when pressed */
+.icon:active {
+  transform: scale(0.92);
 }

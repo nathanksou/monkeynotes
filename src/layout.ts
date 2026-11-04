@@ -79,8 +79,18 @@ export function toggleFolders(): void {
     applyView();
     return;
   }
+  // Slide the sidebar open or shut. Only this toggle animates the columns; the
+  // class is dropped afterwards so other layout changes (list/gallery) stay instant.
+  els.app.classList.add("sidebar-anim");
+  clearTimeout(sidebarAnimTimer);
+  sidebarAnimTimer = window.setTimeout(() => {
+    els.app.classList.remove("sidebar-anim");
+    app.editor.refresh();
+  }, 280);
   setSetting("hideFolders", !settings().hideFolders);
 }
+
+let sidebarAnimTimer = 0;
 
 /** Classes for the current view; the CSS does the layout. */
 export function applyView(): void {
