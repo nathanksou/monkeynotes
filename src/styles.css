@@ -101,11 +101,6 @@ kbd {
   border-right: 1px solid var(--sub-alt);
 }
 
-#app.zen .pane {
-  opacity: 0;
-  pointer-events: none;
-}
-
 .pane-head {
   display: flex;
   align-items: center;
@@ -226,10 +221,6 @@ kbd {
   background: var(--bg);
   color: var(--text);
   outline: 1px dashed var(--main);
-}
-
-.folder.smart .twisty::before {
-  content: "~";
 }
 
 .count {
@@ -954,7 +945,7 @@ kbd {
   color: var(--main);
 }
 
-/* ------------------------------------------------------------ collapsible sidebars */
+/* ------------------------------------------------------------ layout: sidebar, list, gallery */
 
 #app {
   --folders-w: var(--folders-size, 200px);
@@ -962,20 +953,41 @@ kbd {
   grid-template-columns: var(--folders-w) var(--notes-w) 1fr;
 }
 
-#app.hide-folders,
-#app.zen {
+#app.hide-folders {
   --folders-w: 0px;
 }
 
-#app.hide-notes,
-#app.zen {
+/* gallery view: no list column; the gallery (or the open note) fills the rest */
+#app.grid {
   --notes-w: 0px;
 }
 
 #app.hide-folders #folders,
-#app.hide-notes #notes {
+#app.grid #notes {
   opacity: 0;
   pointer-events: none;
+}
+
+/* the sidebar toggle always sits in the top-left corner */
+#sidebar-toggle {
+  position: fixed;
+  top: 0.8rem;
+  left: 0.75rem;
+  z-index: 6;
+}
+
+.brand {
+  padding-left: 2rem;
+}
+
+/* when the sidebar is hidden, whatever is in that corner makes room for the toggle */
+#app.hide-folders #notes .pane-head,
+#app.hide-folders .gallery-head {
+  padding-left: 3.25rem;
+}
+
+#app.hide-folders .topbar-left {
+  left: 3.25rem;
 }
 
 .pane-actions {
@@ -984,12 +996,12 @@ kbd {
   gap: 0.25rem;
 }
 
-.pane-toggle {
+.icon {
   display: grid;
   place-items: center;
 }
 
-.pane-toggle svg {
+.icon svg {
   width: 1rem;
   height: 1rem;
   fill: none;
@@ -999,36 +1011,166 @@ kbd {
   stroke-linejoin: round;
 }
 
-/* expand buttons, shown at the top left of the editor when a sidebar is hidden */
-.show-panes {
+.view-switch {
+  display: flex;
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--sub-alt);
+}
+
+.view-switch .icon {
+  width: 1.6rem;
+  height: 1.5rem;
+}
+
+.view-switch .icon.on {
+  background: var(--bg);
+  color: var(--main);
+}
+
+.folder-icon {
+  flex: none;
+  width: 0.95rem;
+  height: 0.95rem;
+  margin-right: 0.5rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.8;
+}
+
+/* back button, shown above a note opened from the gallery */
+.topbar-left {
   position: absolute;
   top: 50%;
   left: 1rem;
   transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
 }
 
-#show-folders,
-#show-notes {
+#back-to-gallery {
   display: none;
 }
 
-#app.hide-folders #show-folders,
-#app.zen #show-folders,
-#app.hide-notes #show-notes,
-#app.zen #show-notes {
-  display: inline;
+#app.grid-note #back-to-gallery {
+  display: grid;
 }
 
-.show-pane {
+/* ------------------------------------------------------------ gallery */
+
+#gallery {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: none;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+#app.grid:not(.grid-note) #gallery {
+  display: flex;
+}
+
+.gallery-head {
+  padding-right: 1.5rem;
+}
+
+#gallery-title {
+  flex: none;
+}
+
+#gallery-search {
+  flex: 1;
+  max-width: 280px;
+  margin-left: auto;
+  background: var(--sub-alt);
+  border: 0;
+  outline: 0;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius);
+  color: var(--text);
+  caret-color: var(--caret);
   font-size: 0.85rem;
 }
 
-.show-pane::before {
-  content: "\25b8 ";
-  opacity: 0.7;
+#gallery-search::placeholder {
+  color: var(--sub);
+}
+
+#gallery-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  align-content: start;
+  gap: 1.75rem 1.25rem;
+  padding: 1rem 1.5rem 3rem;
+}
+
+.card {
+  min-width: 0;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+}
+
+.card .thumb {
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius);
+  background: var(--sub-alt);
+  box-shadow: 0 0 0 1px transparent;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 0.55rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(to bottom, #000 70%, transparent);
+  transition: box-shadow var(--speed);
+}
+
+.card .thumb::first-line {
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.card:hover .thumb {
+  box-shadow: 0 0 0 1px var(--sub);
+}
+
+.card.active .thumb,
+.card:focus-visible .thumb {
+  box-shadow: 0 0 0 2px var(--main);
+}
+
+.card-title {
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card.active .card-title {
+  color: var(--main);
+}
+
+.card-date {
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
+  text-align: center;
+  color: var(--sub);
+}
+
+.gallery-empty {
+  grid-column: 1 / -1;
+  padding: 2rem 0;
+  color: var(--sub);
+  font-size: 0.85rem;
 }
 
 @media (max-width: 760px) {
@@ -1036,7 +1178,7 @@ kbd {
   #app {
     --folders-w: 0px;
   }
-  #app:not(.hide-notes):not(.zen) {
+  #app:not(.grid) {
     --notes-w: min(var(--notes-size, 280px), 45vw);
   }
   #app #folders {

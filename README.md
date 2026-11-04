@@ -8,13 +8,12 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 
 ## features
 
-- **folders and notes**: all notes, your folders (nested as deep as you like, collapsible), and recently deleted. The first line of a note is its title, and the list is sorted by last edit, with pinned notes on top.
+- **organized like Apple Notes**: a folders sidebar (nested as deep as you like) you can hide with the button in the corner, then either a **list view** (notes list next to the editor) or a **gallery view** (a grid of note cards; click one to open it full size, and the back arrow returns to the gallery). The first line of a note is its title, and the list is sorted by last edit, with pinned notes on top.
 - **typing-test feel**: Roboto Mono and a custom smooth caret. Notes open at the top. If you like, `focus mode` fades the UI while you type (off by default).
-- **adjustable sidebars**: drag a sidebar's right edge to resize it (double-click the edge to reset), or hide it with the button in its corner and bring it back from the top left of the editor.
+- **adjustable sidebars**: drag the folders sidebar's or the notes list's right edge to resize it (double-click the edge to reset).
 - **typing stats**: a stats bar under the editor shows live wpm, words and time typed today, your 30-day average and your daily streak. It stays visible while you type. Click it for a full stats view with a 14-day chart.
 - **typing sounds and animations** (off by default): click, pop, thock or typewriter sounds, synthesized on the fly; letters that float away, sparks, or a caret pulse.
 - **`[[links]]`**: Obsidian-style links are underlined. `ctrl+click` one or press `ctrl+enter` on it to open the note, or create it if it doesn't exist yet.
-- **zen mode** (`ctrl+\`): hide the sidebars and just write.
 - **command line** (`esc` or `ctrl+k`): every action and setting is a few keystrokes away, including themes with live preview.
 - **189 themes**: Monkeytype's whole collection plus a couple of originals, with live preview, and `random theme` when you can't decide.
 - **plain markdown files**: every note is a `.md` file in a folder you choose, so you can sync it with iCloud, Dropbox or git, or open it in any other editor.
@@ -35,7 +34,8 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 | `ctrl+f` | find in note |
 | `ctrl+enter` / `ctrl+click` | follow the `[[link]]` under the caret |
 | `ctrl+shift+f` | search all notes |
-| `ctrl+\` | zen mode |
+| `ctrl+\` | show / hide the folders sidebar |
+| `ctrl+1` / `ctrl+2` | list view / gallery view |
 | `alt+↑` / `alt+↓` | previous / next note |
 | `ctrl+=` / `ctrl+-` | font size |
 

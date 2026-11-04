@@ -9,10 +9,10 @@
   </head>
   <body>
     <div id="app">
+      <button id="sidebar-toggle" class="icon" title="show / hide folders (ctrl+\)" aria-label="show or hide folders"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/><path d="M3.3 5h1M3.3 7h1M3.3 9h1"/></svg></button>
       <aside id="folders" class="pane">
         <header class="pane-head">
           <span class="brand"><span class="accent">monkey</span>notes</span>
-          <button id="hide-folders" class="icon pane-toggle" title="hide folders" aria-label="hide folders"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/><path d="M10.5 6 8.5 8l2 2"/></svg></button>
         </header>
         <ul id="folder-list" class="list"></ul>
         <div class="resize-handle" data-pane="folders" title="drag to resize · double-click to reset"></div>
@@ -25,8 +25,11 @@
         <header class="pane-head">
           <span id="notes-title"></span>
           <span class="pane-actions">
-            <button id="new-note" class="icon" title="new note (ctrl+n)">+</button>
-            <button id="hide-notes" class="icon pane-toggle" title="hide notes list" aria-label="hide notes list"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/><path d="M10.5 6 8.5 8l2 2"/></svg></button>
+            <span class="view-switch" role="group" aria-label="view">
+              <button class="icon js-view" data-view="list" title="list view (ctrl+1)" aria-label="list view"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4h8M5.5 8h8M5.5 12h8"/><path d="M2.5 4h.5M2.5 8h.5M2.5 12h.5"/></svg></button>
+              <button class="icon js-view" data-view="grid" title="gallery view (ctrl+2)" aria-label="gallery view"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg></button>
+            </span>
+            <button class="icon js-new-note" title="new note (ctrl+n)" aria-label="new note"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
           </span>
         </header>
         <div class="search-wrap">
@@ -38,9 +41,8 @@
 
       <main id="main">
         <div id="topbar">
-          <span class="show-panes">
-            <button id="show-folders" class="ghost show-pane" title="show folders">folders</button>
-            <button id="show-notes" class="ghost show-pane" title="show notes list">notes</button>
+          <span class="topbar-left">
+            <button id="back-to-gallery" class="icon" title="back to gallery" aria-label="back to gallery"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg></button>
           </span>
           <button id="open-palette" class="ghost" title="command line (esc)">esc</button>
         </div>
@@ -64,6 +66,20 @@
             <div class="empty-hint">no note selected · <kbd>ctrl</kbd> + <kbd>n</kbd> to start one</div>
           </div>
         </div>
+        <section id="gallery" aria-label="gallery">
+          <header class="pane-head gallery-head">
+            <span id="gallery-title"></span>
+            <input id="gallery-search" type="text" placeholder="search" spellcheck="false" autocomplete="off" />
+            <span class="pane-actions">
+            <span class="view-switch" role="group" aria-label="view">
+              <button class="icon js-view" data-view="list" title="list view (ctrl+1)" aria-label="list view"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4h8M5.5 8h8M5.5 12h8"/><path d="M2.5 4h.5M2.5 8h.5M2.5 12h.5"/></svg></button>
+              <button class="icon js-view" data-view="grid" title="gallery view (ctrl+2)" aria-label="gallery view"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg></button>
+            </span>
+            <button class="icon js-new-note" title="new note (ctrl+n)" aria-label="new note"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
+          </span>
+          </header>
+          <div id="gallery-grid"></div>
+        </section>
         <footer id="footer">
           <span id="note-meta"></span>
           <span id="statsbar" title="typing stats (click for more)"></span>

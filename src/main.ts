@@ -51,6 +51,10 @@ const els = {
   scroller: $("#scroller"),
   page: $("#page"),
   statsBar: $("#statsbar"),
+  gallery: $("#gallery"),
+  galleryGrid: $("#gallery-grid"),
+  galleryTitle: $("#gallery-title"),
+  gallerySearch: $<HTMLInputElement>("#gallery-search"),
   statsView: $("#stats-view"),
   decor: $("#decor"),
   fx: $("#fx"),
@@ -64,6 +68,10 @@ let editor: Editor;
 let palette: Palette;
 let find: Find;
 let currentId: string | null = null;
+/** In gallery view: whether a note is open full-size (otherwise the cards show). */
+let galleryNoteOpen = false;
+const isGrid = () => settings().viewMode === "grid";
+const galleryShown = () => isGrid() && !galleryNoteOpen;
 let stats: TypingStats;
 let backend: Backend;
 /** Where the notes folder is, for display. */
@@ -155,7 +163,7 @@ function renderFolders(): void {
         twisty.textContent = view().collapsed.includes(r.id) ? "\u25b8" : "\u25be";
         twisty.dataset.toggle = r.id;
       }
-      li.append(twisty);
+      li.append(twisty, folderIcon(r.id === ALL ? "all" : r.id === TRASH ? "trash" : "folder"));
       const name = document.createElement("span");
       name.className = "name";
       name.textContent = r.name;
@@ -202,6 +210,7 @@ function noteRow(n: Note): HTMLLIElement {
 function renderNotes(): void {
   const notes = notesInView();
   els.notesTitle.textContent = folderName(view().folderId);
+  if (isGrid()) renderGallery(notes);
   if (!notes.length) {
     const li = document.createElement("li");
     li.className = "empty";
@@ -271,9 +280,8 @@ function applySettings(): void {
         : "'Roboto Mono', monospace",
   );
   root.setProperty("--line-width", s.lineWidth === "narrow" ? "60ch" : s.lineWidth === "wide" ? "100%" : "80ch");
-  els.app.classList.toggle("zen", s.zen);
   els.app.classList.toggle("hide-folders", s.hideFolders);
-  els.app.classList.toggle("hide-notes", s.hideNotes);
+  applyView();
   els.app.style.setProperty("--folders-size", `${s.foldersWidth}px`);
   els.app.style.setProperty("--notes-size", `${s.notesWidth}px`);
   els.app.classList.toggle("no-stats", !s.liveStats);
@@ -298,6 +306,11 @@ function openNote(id: string | null, opts: { focus?: boolean } = {}): void {
   renderNotes();
   renderStats();
   saveState();
+  if (isGrid()) {
+    // in gallery view, opening a note (not just selecting one) shows it full-size
+    galleryNoteOpen = !!n && opts.focus !== false;
+    applyView();
+  }
   if (opts.focus !== false && n) editor.focus();
 }
 
@@ -329,7 +342,7 @@ function noteAction(fn: () => void, nextFrom?: Note[]): void {
     const i = nextFrom.indexOf(n);
     const next = nextFrom.slice(i + 1).find((x) => after.includes(x)) ?? after.filter((x) => nextFrom.includes(x)).at(-1);
     renderFolders();
-    openNote(next?.id ?? null);
+    openNote(next?.id ?? null, { focus: !isGrid() });
   } else {
     renderAll();
   }
@@ -631,16 +644,115 @@ function bindResizeHandles(): void {
   }
 }
 
-/** Collapse or expand one sidebar. Showing one also leaves zen mode. */
-function togglePane(pane: "folders" | "notes"): void {
-  const key = pane === "folders" ? "hideFolders" : "hideNotes";
-  const s = settings();
-  const hidden = s.zen || s[key];
-  if (hidden && s.zen) {
-    // leaving zen: show the pane that was asked for, keep the other as it was
-    s.zen = false;
+// ---------------------------------------------------------------- views (list / gallery) and the sidebar
+
+const ICONS = {
+  all: '<path d="M3 4.5h10M3 8h10M3 11.5h10"/>',
+  folder: '<path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/>',
+  trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/>',
+};
+
+function folderIcon(kind: keyof typeof ICONS): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("class", "folder-icon");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = ICONS[kind]; // fixed markup, never user text
+  return svg;
+}
+
+function toggleFolders(): void {
+  setSetting("hideFolders", !settings().hideFolders);
+}
+
+/** Classes for the current view; the CSS does the layout. */
+function applyView(): void {
+  els.app.classList.toggle("grid", isGrid());
+  els.app.classList.toggle("grid-note", isGrid() && galleryNoteOpen);
+  for (const b of document.querySelectorAll<HTMLElement>(".js-view")) {
+    b.classList.toggle("on", b.dataset.view === settings().viewMode);
   }
-  setSetting(key, !hidden);
+}
+
+function setView(mode: "list" | "grid"): void {
+  galleryNoteOpen = false;
+  if (settings().viewMode !== mode) setSetting("viewMode", mode);
+  else applyView();
+  renderNotes();
+  if (mode === "list") {
+    editor.refresh();
+    focusEditor();
+  } else {
+    focusGallery();
+  }
+}
+
+function backToGallery(): void {
+  if (!isGrid()) return;
+  if (vault.discardIfBlank(current())) {
+    currentId = null;
+    renderFolders();
+  }
+  galleryNoteOpen = false;
+  applyView();
+  renderNotes();
+  focusGallery();
+}
+
+function focusGallery(): void {
+  const card = els.galleryGrid.querySelector<HTMLElement>(".card.active") ?? els.galleryGrid.querySelector(".card");
+  card?.focus({ preventScroll: false });
+}
+
+/** A card: a small preview of the note's text, then its title and date. */
+function noteCard(n: Note): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.id = n.id;
+  card.tabIndex = 0;
+  card.draggable = !n.deletedAt;
+  if (n.id === currentId) card.classList.add("active");
+  const thumb = document.createElement("div");
+  thumb.className = "thumb";
+  thumb.textContent = n.body.slice(0, 600) || " ";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.textContent = (n.pinned ? "* " : "") + noteTitle(n);
+  const date = document.createElement("div");
+  date.className = "card-date";
+  date.textContent = formatDate(n.updatedAt);
+  card.append(thumb, title, date);
+  return card;
+}
+
+function renderGallery(notes: Note[] = notesInView()): void {
+  els.galleryTitle.textContent = folderName(view().folderId);
+  if (document.activeElement !== els.gallerySearch) els.gallerySearch.value = els.search.value;
+  if (!notes.length) {
+    const empty = document.createElement("div");
+    empty.className = "gallery-empty";
+    empty.textContent = els.search.value ? "no matches" : view().folderId === TRASH ? "nothing here" : "no notes yet";
+    els.galleryGrid.replaceChildren(empty);
+    return;
+  }
+  els.galleryGrid.replaceChildren(...notes.map(noteCard));
+}
+
+/** Arrow keys move between cards; enter opens one. */
+function galleryKey(e: KeyboardEvent): void {
+  const cards = [...els.galleryGrid.querySelectorAll<HTMLElement>(".card")];
+  if (!cards.length) return;
+  const i = Math.max(0, cards.indexOf(document.activeElement as HTMLElement));
+  const top = cards[0].offsetTop;
+  const cols = Math.max(1, cards.filter((c) => c.offsetTop === top).length);
+  const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols }[e.key];
+  if (step !== undefined) {
+    e.preventDefault();
+    cards[Math.min(cards.length - 1, Math.max(0, i + step))].focus();
+  } else if (e.key === "Enter" && document.activeElement?.classList.contains("card")) {
+    e.preventDefault();
+    openNote(cards[i].dataset.id!);
+  }
 }
 
 function focusEditor(): void {
@@ -1022,9 +1134,10 @@ function rootMenu(): Menu {
       sub: () => choice("focus mode", onOff, () => s.focusMode, (v) => setSetting("focusMode", v)),
     },
     { label: "spellcheck", sub: () => choice("spellcheck", onOff, () => s.spellcheck, (v) => setSetting("spellcheck", v)) },
-    { label: s.zen ? "exit zen mode" : "zen mode", hint: "hide both sidebars · ctrl+\\", run: () => setSetting("zen", !s.zen) },
-    { label: s.hideFolders ? "show folders" : "hide folders", run: () => togglePane("folders") },
-    { label: s.hideNotes ? "show notes list" : "hide notes list", run: () => togglePane("notes") },
+    { label: s.hideFolders ? "show folders" : "hide folders", hint: "ctrl+\\", run: toggleFolders },
+    { label: "list view", hint: "ctrl+1", active: s.viewMode === "list", run: () => setView("list") },
+    { label: "gallery view", hint: "ctrl+2", active: s.viewMode === "grid", run: () => setView("grid") },
+    ...(isGrid() && galleryNoteOpen ? [{ label: "back to gallery", run: backToGallery }] : []),
     ...(desktop
       ? [
           { label: "change notes folder", hint: notesDirPath, run: () => void changeNotesDir(true) },
@@ -1069,6 +1182,9 @@ function bindEvents(): void {
       if (document.activeElement === els.search) {
         els.search.blur();
         focusEditor();
+      } else if (document.activeElement === els.gallerySearch) {
+        els.gallerySearch.blur();
+        focusGallery();
       } else openPalette();
     } else if (mod(e) && (k === "k" || (e.shiftKey && k === "p"))) {
       e.preventDefault();
@@ -1084,12 +1200,22 @@ function bindEvents(): void {
       newNote();
     } else if (mod(e) && (e.key === "\\" || e.code === "Backslash")) {
       e.preventDefault();
-      setSetting("zen", !settings().zen);
+      toggleFolders();
+    } else if (mod(e) && (k === "1" || k === "2")) {
+      e.preventDefault();
+      setView(k === "1" ? "list" : "grid");
     } else if (mod(e) && e.shiftKey && k === "f") {
       e.preventDefault();
-      if (settings().zen) setSetting("zen", false);
-      els.search.focus();
-      els.search.select();
+      if (isGrid()) {
+        if (galleryNoteOpen) backToGallery();
+        els.gallerySearch.focus();
+        els.gallerySearch.select();
+      } else {
+        els.search.focus();
+        els.search.select();
+      }
+    } else if (galleryShown() && !(document.activeElement instanceof HTMLInputElement) && !mod(e)) {
+      galleryKey(e);
     } else if (mod(e) && k === "f") {
       e.preventDefault();
       if (current()) find.open();
@@ -1172,11 +1298,41 @@ function bindEvents(): void {
   });
 
   bindResizeHandles();
-  $("#new-note").addEventListener("click", newNote);
-  $("#hide-folders").addEventListener("click", () => togglePane("folders"));
-  $("#hide-notes").addEventListener("click", () => togglePane("notes"));
-  $("#show-folders").addEventListener("click", () => togglePane("folders"));
-  $("#show-notes").addEventListener("click", () => togglePane("notes"));
+  for (const b of document.querySelectorAll<HTMLElement>(".js-new-note")) b.addEventListener("click", newNote);
+  for (const b of document.querySelectorAll<HTMLElement>(".js-view")) {
+    b.addEventListener("click", () => setView(b.dataset.view as "list" | "grid"));
+  }
+  $("#sidebar-toggle").addEventListener("click", toggleFolders);
+  $("#back-to-gallery").addEventListener("click", backToGallery);
+
+  // gallery: open a card, right-click for actions, drag onto a folder, search
+  els.galleryGrid.addEventListener("click", (e) => {
+    const id = (e.target as HTMLElement).closest<HTMLElement>(".card")?.dataset.id;
+    if (id) openNote(id);
+  });
+  els.galleryGrid.addEventListener("contextmenu", (e) => {
+    const n = vault.get((e.target as HTMLElement).closest<HTMLElement>(".card")?.dataset.id ?? null);
+    if (!n) return;
+    e.preventDefault();
+    if (n.id !== currentId) openNote(n.id, { focus: false });
+    openPalette({ title: noteTitle(n), items: noteCommands(n) });
+  });
+  els.galleryGrid.addEventListener("dragstart", (e) => {
+    const id = (e.target as HTMLElement).closest<HTMLElement>(".card")?.dataset.id;
+    if (!id || !e.dataTransfer) return;
+    e.dataTransfer.setData("text/x-monkeynote", id);
+    e.dataTransfer.effectAllowed = "move";
+  });
+  els.gallerySearch.addEventListener("input", () => {
+    els.search.value = els.gallerySearch.value;
+    renderNotes();
+  });
+  els.gallerySearch.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      focusGallery();
+    }
+  });
   $("#new-folder").addEventListener("click", () => void newFolder());
   $("#open-palette").addEventListener("click", () => openPalette());
 
@@ -1388,7 +1544,8 @@ async function main(): Promise<void> {
   const start = last && !last.deletedAt ? last : notesInView()[0];
   if (start && !notesInView().includes(start)) view().folderId = ALL;
   renderFolders();
-  openNote(start?.id ?? null);
+  // gallery view starts on the cards, with the last note selected
+  openNote(start?.id ?? null, { focus: !isGrid() });
   document.body.classList.add("ready");
 
   const DAY = 24 * 60 * 60 * 1000;

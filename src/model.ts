@@ -27,6 +27,7 @@ export interface Note {
 export type FontFamily = "roboto mono" | "system mono" | "sans";
 export type LineWidth = "narrow" | "normal" | "wide";
 export type TitleSource = "first line" | "file name";
+export type ViewMode = "list" | "grid";
 export type SoundKind = "off" | "click" | "pop" | "thock" | "typewriter";
 export type TypingAnimation = "off" | "ghost" | "sparks" | "pulse";
 
@@ -57,14 +58,14 @@ export interface Settings {
   checkUpdates: boolean;
   /** Fade the sidebars and footer while typing (off by default). */
   focusMode: boolean;
-  /** Collapse the folders sidebar / the notes list. */
+  /** Collapse the folders sidebar. */
   hideFolders: boolean;
-  hideNotes: boolean;
+  /** Notes as a list next to the editor, or as a gallery of cards. */
+  viewMode: ViewMode;
   /** Sidebar widths in px (drag their right edge; double-click to reset). */
   foldersWidth: number;
   notesWidth: number;
   spellcheck: boolean;
-  zen: boolean;
   titleSource: TitleSource;
 }
 
@@ -95,11 +96,10 @@ export const defaultSettings: Settings = {
   liveStats: true,
   focusMode: false,
   hideFolders: false,
-  hideNotes: false,
+  viewMode: "list",
   foldersWidth: 200,
   notesWidth: 280,
   spellcheck: false,
-  zen: false,
   titleSource: "first line",
   sound: "off",
   soundVolume: 0.5,
@@ -115,7 +115,8 @@ esc / ctrl+k      command line (themes, settings, everything)
 ctrl+n            new note
 ctrl+shift+n      new folder
 ctrl+p            jump to a note
-ctrl+\\            zen mode (hide the sidebar)
+ctrl+\\            show / hide the folders sidebar
+ctrl+1 / ctrl+2   list view / gallery view
 alt+up / down     previous / next note
 ctrl+= / ctrl+-   font size
 
