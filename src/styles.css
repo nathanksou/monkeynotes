@@ -561,6 +561,7 @@ kbd {
 }
 
 .palette-box {
+  position: relative;
   width: min(700px, calc(100vw - 2rem));
   background: var(--bg);
   border-radius: var(--radius);
@@ -1549,4 +1550,21 @@ kbd {
 #gallery-grid::-webkit-scrollbar,
 .palette-list::-webkit-scrollbar {
   display: none;
+}
+
+/* the floating scroll indicator (see scrollbar.ts): never takes any width */
+.os-thumb {
+  position: absolute;
+  right: 3px;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--sub);
+  opacity: 0;
+  transition: opacity 250ms ease;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.os-thumb.on {
+  opacity: 0.6;
 }

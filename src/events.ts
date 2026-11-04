@@ -1,3 +1,4 @@
+import { overlayScrollbar } from "./scrollbar";
 import { showHistory } from "./history";
 import { ROOT, noteTitle } from "./model";
 import { type KeyType, playKey } from "./sound";
@@ -179,6 +180,9 @@ export function bindEvents(): void {
   });
 
   bindResizeHandles();
+  for (const el of [els.scroller, els.noteList, els.galleryGrid, document.querySelector<HTMLElement>(".palette-list")]) {
+    if (el) overlayScrollbar(el);
+  }
   for (const b of document.querySelectorAll<HTMLElement>(".js-new-note")) b.addEventListener("click", newNote);
   for (const b of document.querySelectorAll<HTMLElement>(".js-view")) {
     b.addEventListener("click", () => setView(b.dataset.view as "list" | "grid"));
