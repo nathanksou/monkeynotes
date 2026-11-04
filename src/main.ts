@@ -24,6 +24,7 @@ import {
   type TitleSource,
   WELCOME,
   formatDate,
+  defaultSettings,
   normalizeState,
   setTitleSource,
   notePreview,
@@ -273,6 +274,8 @@ function applySettings(): void {
   els.app.classList.toggle("zen", s.zen);
   els.app.classList.toggle("hide-folders", s.hideFolders);
   els.app.classList.toggle("hide-notes", s.hideNotes);
+  els.app.style.setProperty("--folders-size", `${s.foldersWidth}px`);
+  els.app.style.setProperty("--notes-size", `${s.notesWidth}px`);
   els.app.classList.toggle("no-stats", !s.liveStats);
   editor?.ta.setAttribute("spellcheck", String(s.spellcheck));
   editor?.setSmooth(s.smoothCaret);
@@ -593,6 +596,39 @@ function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void 
   state.settings[key] = value;
   applySettings();
   saveState();
+}
+
+const PANE_LIMITS = { folders: [140, 420], notes: [180, 560] } as const;
+const clampWidth = (pane: "folders" | "notes", w: number) =>
+  Math.round(Math.min(PANE_LIMITS[pane][1], Math.max(PANE_LIMITS[pane][0], w)));
+
+/** Drag a sidebar's right edge to resize it; double-click the edge to reset. */
+function bindResizeHandles(): void {
+  for (const handle of document.querySelectorAll<HTMLElement>(".resize-handle")) {
+    const pane = handle.dataset.pane as "folders" | "notes";
+    const key = pane === "folders" ? "foldersWidth" : "notesWidth";
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      const startX = e.clientX;
+      const startW = settings()[key];
+      els.app.classList.add("resizing");
+      const move = (ev: PointerEvent) => {
+        settings()[key] = clampWidth(pane, startW + ev.clientX - startX);
+        els.app.style.setProperty(pane === "folders" ? "--folders-size" : "--notes-size", `${settings()[key]}px`);
+      };
+      const up = () => {
+        handle.removeEventListener("pointermove", move);
+        els.app.classList.remove("resizing");
+        editor.refresh();
+        saveState();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up, { once: true });
+      handle.addEventListener("pointercancel", up, { once: true });
+    });
+    handle.addEventListener("dblclick", () => setSetting(key, defaultSettings[key]));
+  }
 }
 
 /** Collapse or expand one sidebar. Showing one also leaves zen mode. */
@@ -1135,6 +1171,7 @@ function bindEvents(): void {
     if (n && folderId !== undefined && isRealFolder(folderId)) moveNote(n, folderId);
   });
 
+  bindResizeHandles();
   $("#new-note").addEventListener("click", newNote);
   $("#hide-folders").addEventListener("click", () => togglePane("folders"));
   $("#hide-notes").addEventListener("click", () => togglePane("notes"));

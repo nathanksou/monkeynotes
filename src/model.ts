@@ -60,6 +60,9 @@ export interface Settings {
   /** Collapse the folders sidebar / the notes list. */
   hideFolders: boolean;
   hideNotes: boolean;
+  /** Sidebar widths in px (drag their right edge; double-click to reset). */
+  foldersWidth: number;
+  notesWidth: number;
   spellcheck: boolean;
   zen: boolean;
   titleSource: TitleSource;
@@ -93,6 +96,8 @@ export const defaultSettings: Settings = {
   focusMode: false,
   hideFolders: false,
   hideNotes: false,
+  foldersWidth: 200,
+  notesWidth: 280,
   spellcheck: false,
   zen: false,
   titleSource: "first line",

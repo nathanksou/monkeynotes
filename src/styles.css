@@ -957,8 +957,8 @@ kbd {
 /* ------------------------------------------------------------ collapsible sidebars */
 
 #app {
-  --folders-w: 200px;
-  --notes-w: 280px;
+  --folders-w: var(--folders-size, 200px);
+  --notes-w: var(--notes-size, 280px);
   grid-template-columns: var(--folders-w) var(--notes-w) 1fr;
 }
 
@@ -1037,7 +1037,7 @@ kbd {
     --folders-w: 0px;
   }
   #app:not(.hide-notes):not(.zen) {
-    --notes-w: 220px;
+    --notes-w: min(var(--notes-size, 280px), 45vw);
   }
   #app #folders {
     opacity: 0;
@@ -1060,4 +1060,44 @@ kbd {
 
 #palette.see-through .palette-list {
   max-height: min(240px, 35vh);
+}
+
+/* ------------------------------------------------------------ resizable sidebars */
+
+.pane {
+  position: relative;
+}
+
+.resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  z-index: 3;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background var(--speed);
+}
+
+.resize-handle:hover::after,
+#app.resizing .resize-handle::after {
+  background: var(--main);
+}
+
+/* follow the pointer exactly while dragging */
+#app.resizing {
+  transition: none;
+  cursor: col-resize;
+  user-select: none;
 }

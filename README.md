@@ -10,7 +10,7 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 
 - **folders and notes**: all notes, your folders (nested as deep as you like, collapsible), and recently deleted. The first line of a note is its title, and the list is sorted by last edit, with pinned notes on top.
 - **typing-test feel**: Roboto Mono and a custom smooth caret. Notes open at the top. If you like, `focus mode` fades the UI while you type (off by default).
-- **collapsible sidebars**: hide the folders or the notes list with the button in their corner; bring them back from the top left of the editor.
+- **adjustable sidebars**: drag a sidebar's right edge to resize it (double-click the edge to reset), or hide it with the button in its corner and bring it back from the top left of the editor.
 - **typing stats**: a stats bar under the editor shows live wpm, words and time typed today, your 30-day average and your daily streak. It stays visible while you type. Click it for a full stats view with a 14-day chart.
 - **typing sounds and animations** (off by default): click, pop, thock or typewriter sounds, synthesized on the fly; letters that float away, sparks, or a caret pulse.
 - **`[[links]]`**: Obsidian-style links are underlined. `ctrl+click` one or press `ctrl+enter` on it to open the note, or create it if it doesn't exist yet.
