@@ -643,7 +643,7 @@ kbd {
 
 #find {
   position: absolute;
-  top: calc(3.25rem + 0.6rem); /* below the note title bar */
+  top: 0.6rem;
   right: 4.5rem;
   z-index: 5;
   display: flex;
@@ -1427,26 +1427,27 @@ kbd {
   cursor: default;
 }
 
-/* the note's own title bar: back (gallery), title, star */
-#note-head {
-  padding: 0 1rem;
-  justify-content: flex-start;
-  color: var(--text);
+/*
+ * Back (gallery) and star sit on the title line itself: back in the left margin, star
+ * at the right edge of the text column. The column is narrowed by the star's width so
+ * a long title wraps before it instead of running underneath.
+ */
+#wrap {
+  padding-right: 2rem;
 }
 
-#note-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.title-btn {
+  position: absolute;
+  z-index: 3;
+  top: calc((var(--font-size) * 1.6 - 1.75rem) / 2);
 }
 
-#note-head .icon {
-  flex: none;
+#back-to-gallery.title-btn {
+  left: -2rem;
 }
 
-#note-head #star-note {
-  margin-left: auto;
+#star-note.title-btn {
+  right: 0;
 }
 
 /* version history sits right after the "edited" time in the footer */

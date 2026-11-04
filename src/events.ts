@@ -238,7 +238,7 @@ export function bindEvents(): void {
 
   // Clicking empty space on the page puts the caret at the end.
   els.page.addEventListener("mousedown", (e) => {
-    if (e.target === app.editor.ta || !current()) return;
+    if (e.target === app.editor.ta || !current() || (e.target as HTMLElement).closest("button")) return;
     e.preventDefault();
     const end = app.editor.ta.value.length;
     app.editor.ta.setSelectionRange(end, end);

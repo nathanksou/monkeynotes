@@ -45,11 +45,6 @@
       </section>
 
       <main id="main">
-        <header id="note-head" class="pane-head">
-          <button id="back-to-gallery" class="icon" title="back to gallery" aria-label="back to gallery"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg></button>
-          <span id="note-title"></span>
-          <button id="star-note" class="icon" title="star note" aria-label="star note" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m8 2.2 1.75 3.6 3.95.55-2.87 2.77.69 3.93L8 11.2l-3.52 1.85.69-3.93L2.3 6.35l3.95-.55z"/></svg></button>
-        </header>
         <div id="find" hidden>
           <input type="text" placeholder="find in note" spellcheck="false" autocomplete="off" />
           <span class="find-count"></span>
@@ -65,6 +60,9 @@
               <textarea id="editor" class="text" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="note"></textarea>
               <div class="mirror text" aria-hidden="true"></div>
               <div class="caret hidden smooth"></div>
+              <!-- back and star sit beside the first line (the title) -->
+              <button id="back-to-gallery" class="icon title-btn" title="back to gallery" aria-label="back to gallery"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg></button>
+              <button id="star-note" class="icon title-btn" title="star note" aria-label="star note" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m8 2.2 1.75 3.6 3.95.55-2.87 2.77.69 3.93L8 11.2l-3.52 1.85.69-3.93L2.3 6.35l3.95-.55z"/></svg></button>
               <div id="fx" aria-hidden="true"></div>
             </div>
             <div class="empty-hint">no note selected · <kbd>ctrl</kbd> + <kbd>n</kbd> to start one</div>

@@ -101,7 +101,7 @@ export function applyView(): void {
     toggle.title = `${label} (ctrl+\\)`;
   }
   els.notesPane.inert = isGrid();
-  for (const el of [els.noteHead, els.scroller, els.footer]) el.inert = galleryShown();
+  for (const el of [els.scroller, els.footer]) el.inert = galleryShown();
 }
 
 let switchingTimer = 0;
