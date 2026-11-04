@@ -1,3 +1,4 @@
+import { showHistory } from "./history";
 import { ROOT, noteTitle } from "./model";
 import { type KeyType, playKey } from "./sound";
 import { $, app, current, els, folderName, galleryShown, isGrid, isRealFolder, notesInView, settings, toast, toastAction, writeState } from "./app";
@@ -206,6 +207,11 @@ export function bindEvents(): void {
   });
   $("#new-folder").addEventListener("click", () => void newFolder());
   $("#open-palette").addEventListener("click", () => openPalette());
+  $("#open-history").addEventListener("click", () => {
+    const n = current();
+    if (!n || n.deletedAt || galleryShown()) return toast("open a note to see its version history");
+    void showHistory(n);
+  });
 
   els.search.addEventListener("input", () => {
     // results show in the list, or as cards in gallery view

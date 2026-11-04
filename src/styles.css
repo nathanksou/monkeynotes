@@ -256,8 +256,11 @@ kbd {
   border-bottom: 1px solid var(--sub-alt);
 }
 
-#open-palette {
+.toolbar-right {
   justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .toolbar-left {
