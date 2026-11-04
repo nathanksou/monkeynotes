@@ -244,3 +244,18 @@ describe("case-only renames", () => {
     expect(be.paths().sort()).toEqual(["Ideas.md", "ideas 2.md"]);
   });
 });
+
+describe("huge folders", () => {
+  it("warns about notes the scan left out and never treats them as deleted", async () => {
+    const be = new MemoryBackend();
+    be.files.set("a.md", { body: "A", created: 1, modified: 1 });
+    const v = new Vault(be);
+    const msgs: string[] = [];
+    v.onError = (m) => msgs.push(m);
+    const real = be.scan.bind(be);
+    be.scan = async (known) => ({ ...(await real(known)), unloaded: ["big.md"], unloaded_count: 1 });
+    await v.load();
+    expect(msgs.join()).toMatch(/1 notes weren't loaded/);
+    expect(v.notes.map((n) => n.path)).toEqual(["a.md"]);
+  });
+});

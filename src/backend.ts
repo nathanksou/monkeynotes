@@ -20,6 +20,13 @@ export interface Scan {
   dirs: string[];
   files: FileEntry[];
   meta: string | null;
+  /**
+   * Notes that exist on disk but weren't loaded because the folder is huge (size
+   * and count caps). They must not be treated as deleted or shown as empty.
+   */
+  unloaded?: string[];
+  /** The true number of unloaded notes (`unloaded` lists at most 10,000). */
+  unloaded_count?: number;
 }
 
 /** A file brought in by an import. */

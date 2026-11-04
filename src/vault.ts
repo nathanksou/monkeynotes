@@ -140,6 +140,7 @@ export class Vault {
     const meta = this.parseMeta(scan.meta);
     const pinned = new Set(meta.pinned ?? []);
     this.notes = scan.files.map((f) => this.fromFile(f, f.body ?? "", meta, pinned));
+    this.warnUnloaded(scan);
     this.starredFolders = new Set((meta.starredFolders ?? []).filter((id) => this.folders.some((f) => f.id === id)));
     this.rememberTimes(scan);
     // Recently deleted notes are purged after 30 days, but only ones this app put
@@ -222,7 +223,8 @@ export class Vault {
       }
     }
     // Files that disappeared; notes not yet on disk, failing to save or just edited stay.
-    this.notes = this.notes.filter((n) => !n.path || seen.has(n) || this.dirty.has(n) || editedSince(n));
+    const unloaded = new Set(scan.unloaded ?? []);
+    this.notes = this.notes.filter((n) => !n.path || seen.has(n) || unloaded.has(n.path) || this.dirty.has(n) || editedSince(n));
     this.rememberTimes(scan);
     // Stars changed on another device: take them, unless we have changes of our own waiting to be saved.
     if (scan.meta && !this.metaDirty && this.lastMeta === JSON.stringify(this.buildMeta())) {
@@ -233,6 +235,14 @@ export class Vault {
     }
     if (this.metaIsStale(meta)) this.metaDirty = true;
     return openChanged;
+  }
+
+  /** A folder too big to load completely: say so once, and never touch what was left out. */
+  private warnUnloaded(scan: Scan): void {
+    const count = scan.unloaded_count ?? 0;
+    if (count > 0) {
+      this.onError(`this folder is very large: ${count} notes weren't loaded. they are untouched on disk`);
+    }
   }
 
   private rememberTimes(scan: Scan): void {
@@ -330,7 +340,10 @@ export class Vault {
       (e) => {
         this.failures++;
         onFail?.();
-        this.onError(`${label} failed: ${e}`);
+        const why = String(e).startsWith("TOO_LARGE")
+          ? "it is too big (notes can be 8 MB at most)"
+          : String(e);
+        this.onError(`${label} failed: ${why}`);
       },
     );
     this.queue = p;
