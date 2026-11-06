@@ -345,15 +345,37 @@ async fn scan(dir: State<'_, NotesDir>, known: Option<HashMap<String, u64>>) -> 
 
 /// Write a note. With `create_new`, refuses (EEXIST) to replace a file that
 /// already exists, so a note never overwrites a file the app doesn't know about.
+/// `expected` is the text the app last saved there: if another app (a sync
+/// client, another editor) has changed the file since, its text is kept as a
+/// version before it's replaced.
 #[tauri::command]
-async fn write_file(dir: State<'_, NotesDir>, path: String, contents: String, create_new: bool) -> Res<()> {
+async fn write_file(
+    dir: State<'_, NotesDir>,
+    path: String,
+    contents: String,
+    create_new: bool,
+    expected: Option<String>,
+) -> Res<()> {
     fsutil::check_note_len(contents.len())?;
-    let target = note_path(&dir.live_root()?, &path, true)?;
+    let root = dir.live_root()?;
+    let target = note_path(&root, &path, true)?;
     if create_new {
-        write_new(&target, &contents, &path)
-    } else {
-        write_atomic(&target, &contents)
+        return write_new(&target, &contents, &path);
     }
+    keep_outside_edit(&root, &path, &target, expected.as_deref(), &contents)?;
+    write_atomic(&target, &contents)
+}
+
+/// If the file no longer holds `expected`, save what it holds now as a version.
+fn keep_outside_edit(root: &Path, path: &str, target: &Path, expected: Option<&str>, contents: &str) -> Res<()> {
+    let Some(expected) = expected else { return Ok(()) };
+    let Ok(disk) = fs::read_to_string(target) else {
+        return Ok(());
+    };
+    if disk != expected && disk != contents && !disk.trim().is_empty() {
+        save_version(root, path, &disk, now_ms())?;
+    }
+    Ok(())
 }
 
 /// Rename a note, or a folder. Never overwrites (EEXIST).
@@ -815,6 +837,25 @@ mod tests {
         ] {
             assert!(resolve(root, bad).is_err(), "{bad} should be rejected");
         }
+    }
+
+    #[test]
+    fn an_outside_edit_is_kept_as_a_version_before_saving_over_it() {
+        let root = temp_root("outside-edit");
+        let target = root.join("a.md");
+        let history = |root: &Path| versions_in(&history_dir(root, "a.md", false).unwrap());
+        // unchanged since our last save: no extra version
+        fs::write(&target, "mine").unwrap();
+        keep_outside_edit(&root, "a.md", &target, Some("mine"), "new").unwrap();
+        assert!(history(&root).is_empty());
+        // changed by another app: its text is kept
+        fs::write(&target, "theirs").unwrap();
+        keep_outside_edit(&root, "a.md", &target, Some("mine"), "new").unwrap();
+        let v = history(&root);
+        assert_eq!(v.len(), 1);
+        let kept = history_dir(&root, "a.md", false).unwrap().join(format!("{}.md", v[0]));
+        assert_eq!(fs::read_to_string(kept).unwrap(), "theirs");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

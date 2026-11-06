@@ -452,11 +452,11 @@ export class Vault {
           await this.be.historyMove(from, target, false).catch((e) => this.onError(`moving history failed: ${e}`));
           if (moved) {
             await this.snapshot(n, target);
-            await this.be.write(target, body, false);
+            await this.be.write(target, body, false, this.savedBody.get(n));
           }
         } else {
           await this.snapshot(n, target);
-          await this.be.write(target, body, false);
+          await this.be.write(target, body, false, this.savedBody.get(n));
         }
         this.savedBody.set(n, body);
         this.movedTo(n, target);

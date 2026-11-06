@@ -88,11 +88,16 @@ export class MemoryBackend implements Backend {
       meta: this.files.get(".monkeynotes.json")?.body ?? null,
     };
   }
-  async write(path: string, body: string, createNew: boolean) {
+  async write(path: string, body: string, createNew: boolean, expected?: string) {
     this.check("write", path);
     if (this.failWrites.delete(path)) throw "disk full";
     if (createNew && this.key(path) !== undefined) throw `EEXIST: ${path}`;
     const existing = this.key(path);
+    // like the Rust side: text another app wrote since our last save is kept as a version
+    const disk = existing === undefined ? undefined : this.files.get(existing)?.body;
+    if (expected !== undefined && disk !== undefined && disk !== expected && disk !== body && disk.trim()) {
+      await this.historySave(path, disk);
+    }
     this.put(existing ?? path, body);
   }
   async rename(from: string, to: string) {

@@ -56,8 +56,12 @@ export interface Backend {
 
   /** `known` maps paths to modified times; matching files come back without a body. */
   scan(known?: Record<string, number>): Promise<Scan>;
-  /** With `createNew`, fails with EEXIST instead of replacing an existing file. */
-  write(path: string, contents: string, createNew: boolean): Promise<void>;
+  /**
+   * With `createNew`, fails with EEXIST instead of replacing an existing file.
+   * `expected` is the text last saved there: if another app changed the file
+   * since, its text is kept as a version before it's replaced.
+   */
+  write(path: string, contents: string, createNew: boolean, expected?: string): Promise<void>;
   /** Fails with EEXIST instead of replacing an existing file. */
   rename(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
@@ -104,8 +108,8 @@ class TauriBackend implements Backend {
   resetNotesDir = (persist: boolean) => invoke<string>("reset_notes_dir", { persist });
 
   scan = (known?: Record<string, number>) => invoke<Scan>("scan", { known: known ?? null });
-  write = (path: string, contents: string, createNew: boolean) =>
-    invoke<void>("write_file", { path, contents, createNew });
+  write = (path: string, contents: string, createNew: boolean, expected?: string) =>
+    invoke<void>("write_file", { path, contents, createNew, expected: expected ?? null });
   rename = (from: string, to: string) => invoke<void>("rename_path", { from, to });
   remove = (path: string) => invoke<void>("remove_file", { path });
   mkdir = (path: string) => invoke<void>("make_dir", { path });

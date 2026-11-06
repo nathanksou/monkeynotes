@@ -27,6 +27,26 @@ describe("external changes between reloads", () => {
     expect(versions(be, "a.md")).toContain("a\nfrom another app");
   });
 
+  it("keeps a disk change that arrived without a reload before saving over it", async () => {
+    const { be, v } = await open({ "a.md": "a\noriginal" });
+    const n = v.notes[0];
+    be.put("a.md", "a\nsynced from another device"); // no focus, so no reload
+    v.setBody(n, "a\nmy edit");
+    await v.flush();
+    expect(be.files.get("a.md")?.body).toBe("a\nmy edit");
+    expect(versions(be, "a.md")).toContain("a\nsynced from another device");
+  });
+
+  it("doesn't add extra versions when nothing else touched the file", async () => {
+    const { be, v } = await open({ "a.md": "a\noriginal" });
+    const n = v.notes[0];
+    v.setBody(n, "a\none");
+    await v.flush();
+    v.setBody(n, "a\ntwo");
+    await v.flush();
+    expect(versions(be, "a.md")).toEqual(["a\noriginal"]);
+  });
+
   it("adopts stars changed on disk and doesn't wipe them with the next save", async () => {
     const meta = (pinned: string[]) => JSON.stringify({ pinned, starredFolders: ["f"], trash: {} });
     const { be, v } = await open({ "a.md": "a", "b.md": "b", "f/c.md": "c", [META_FILE]: meta(["a.md"]) });
