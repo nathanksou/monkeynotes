@@ -17,9 +17,11 @@ export function bindEvents(): void {
     els.app.classList.remove("drawer-open");
     applyView();
   });
-  // On Windows, AltGr (how many layouts type \ @ ń ...) arrives as ctrl+alt. No
-  // shortcut uses ctrl+alt, so treat it as typing, not as ctrl.
-  const mod = (e: KeyboardEvent) => e.metaKey || (e.ctrlKey && !e.altKey);
+  // Shortcuts use cmd on a Mac, where ctrl+N/P/F/K are the system's text-editing
+  // keys. Elsewhere AltGr (how many layouts type \ @ ń ...) arrives as ctrl+alt;
+  // no shortcut uses ctrl+alt, so that's typing, not ctrl.
+  const mac = navigator.userAgent.includes("Mac");
+  const mod = (e: KeyboardEvent) => (mac ? e.metaKey : e.ctrlKey && !e.altKey);
 
   document.addEventListener("keydown", (e) => {
     if (app.palette.isOpen || e.isComposing) return;

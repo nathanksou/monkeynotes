@@ -5,6 +5,7 @@ import { renderStatsView } from "./stats-view";
 import { app, current, els, saveState, settings, targetFolder, toast, view } from "./app";
 import { renderFolders } from "./list";
 import { openNote } from "./notes";
+import { safeName } from "./vault";
 import { restoreFocus } from "./layout";
 
 export function resetLiveStats(): void {
@@ -68,10 +69,13 @@ function followLink(target: string): void {
   // "folder/name" first, then a bare file name, then a title
   const pathNoExt = (p: string) => p.replace(/\.[^./]+$/, "").toLowerCase();
   const live = app.vault.notes.filter((n) => !n.deletedAt);
+  // the file name a link creates (below), so following it again finds that note
+  const created = safeName(target.split("/").pop() ?? target).toLowerCase();
   let n =
     live.find((x) => x.path && pathNoExt(x.path) === t) ??
     live.find((x) => x.path && stemOf(x.path).toLowerCase() === t) ??
-    live.find((x) => noteTitle(x).toLowerCase() === t);
+    live.find((x) => noteTitle(x).toLowerCase() === t) ??
+    live.find((x) => x.path && stemOf(x.path).toLowerCase() === created);
   if (!n) {
     const from = current();
     const folder = from && !from.deletedAt ? from.folderId : targetFolder();

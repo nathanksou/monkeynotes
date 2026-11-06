@@ -126,6 +126,15 @@ export class Vault {
   /** Called when a folder rename fails on disk and is undone (old id, new id). */
   onFolderRenameReverted: (from: string, to: string) => void = () => {};
 
+  /** File name a trashed note had before, so restoring puts it back as it was. */
+  private originalName = new WeakMap<Note, string>();
+  /** Requested file names for imported notes that haven't been written yet. */
+  private nameHints = new WeakMap<Note, string>();
+
+  private metaBackedUp = false;
+
+  constructor(private be: Backend) {}
+
   /**
    * Stop reading and writing, e.g. while the notes folder is being switched,
    * so nothing from this vault lands in the new folder. Pending saves wait.
@@ -140,14 +149,6 @@ export class Vault {
     this.frozen = false;
     this.schedule();
   }
-  /** File name a trashed note had before, so restoring puts it back as it was. */
-  private originalName = new WeakMap<Note, string>();
-  /** Requested file names for imported notes that haven't been written yet. */
-  private nameHints = new WeakMap<Note, string>();
-
-  private metaBackedUp = false;
-
-  constructor(private be: Backend) {}
 
   // ---------------------------------------------------------------- loading
 
@@ -160,12 +161,7 @@ export class Vault {
     this.warnUnloaded(scan);
     this.starredFolders = new Set((meta.starredFolders ?? []).filter((id) => this.folders.some((f) => f.id === id)));
     this.rememberTimes(scan);
-    // Recently deleted notes are purged after 30 days, but only ones this app put
-    // there: another app's .trash (Obsidian uses one too) is never purged.
-    const cutoff = Date.now() - TRASH_TTL_MS;
-    for (const n of this.notes.filter((x) => x.deletedAt && !x.foreignTrash && x.deletedAt < cutoff)) {
-      this.destroy(n);
-    }
+    this.purgeOldTrash();
     this.lastMeta = JSON.stringify(this.buildMeta());
     if (this.metaIsStale(meta)) {
       this.metaDirty = true;
@@ -206,6 +202,17 @@ export class Vault {
     const changed = await result;
     await this.flush();
     return changed;
+  }
+
+  /**
+   * Recently deleted notes are purged after 30 days, but only ones this app put
+   * there: another app's .trash (Obsidian uses one too) is never purged.
+   */
+  private purgeOldTrash(): void {
+    const cutoff = Date.now() - TRASH_TTL_MS;
+    for (const n of this.notes.filter((x) => x.deletedAt && !x.foreignTrash && x.deletedAt < cutoff)) {
+      this.destroy(n);
+    }
   }
 
   private reconcile(scan: Scan, openId: string | null, mark: number): boolean {
@@ -251,6 +258,7 @@ export class Vault {
       this.starredFolders = new Set((meta.starredFolders ?? []).filter((id) => this.folders.some((f) => f.id === id)));
       this.lastMeta = JSON.stringify(this.buildMeta());
     }
+    this.purgeOldTrash(); // the app may have stayed open for weeks
     if (this.metaIsStale(meta)) this.metaDirty = true;
     return openChanged;
   }

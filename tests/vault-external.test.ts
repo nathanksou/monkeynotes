@@ -108,6 +108,20 @@ describe("unreadable metadata", () => {
   });
 });
 
+describe("trash cleanup", () => {
+  it("purges notes trashed over 30 days ago on a reload, not only at launch", async () => {
+    const { be, v } = await open({ "old.md": "old", "keep.md": "keep" });
+    const old = v.notes.find((n) => n.path === "old.md")!;
+    v.trash(old);
+    await v.flush();
+    old.deletedAt = Date.now() - 31 * 24 * 60 * 60 * 1000; // the app stayed open for a month
+    await v.reload(null);
+    await v.flush();
+    expect(v.notes.map((n) => n.path)).toEqual(["keep.md"]);
+    expect([...be.files.keys()].filter((p) => p.endsWith(".md"))).toEqual(["keep.md"]);
+  });
+});
+
 describe("switching notes folders", () => {
   it("writes nothing while frozen, and saves what waited once unfrozen", async () => {
     const { be, v } = await open({ "a.md": "a\noriginal" });

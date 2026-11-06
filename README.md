@@ -60,7 +60,7 @@ Want to build it yourself instead? See [development](#development).
 | `alt+↑` / `alt+↓` | previous / next note |
 | `ctrl+=` / `ctrl+-` | font size |
 
-On macOS, `cmd` works anywhere `ctrl` is listed. Right-click a note or folder for more actions, and drag notes onto folders to move them.
+On macOS, use `cmd` wherever `ctrl` is listed. Right-click a note or folder for more actions, and drag notes onto folders to move them.
 
 ## where your notes live
 
@@ -134,7 +134,7 @@ src-tauri/
 
 ### security model
 
-The UI runs in a webview and never handles absolute paths. The Rust side owns the notes folder: it's chosen in a native folder dialog and remembered there. Every note path from the UI is relative and checked so it can't leave that folder. Files outside it are only read or written through native open and save dialogs. The webview can't call the dialog or file-system plugins directly, and it can only open links to this repo. All file commands run off the main thread.
+The UI runs in a webview and never sends absolute paths to the Rust side, which owns the notes folder: it's chosen in a native folder dialog and remembered there. Every note path from the UI is relative and checked so it can't leave that folder. Files outside it are only read or written through native open and save dialogs. The webview can't call the dialog or file-system plugins directly, and it can only open links to this repo. All file commands run off the main thread.
 
 ### test builds
 
