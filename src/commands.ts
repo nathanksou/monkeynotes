@@ -1,4 +1,4 @@
-import { linkAt } from "./links";
+import { linkAt, tagAt, tagsOf } from "./links";
 import { ALL, type FontFamily, type LineWidth, type Note, ROOT, type SoundKind, TRASH, type TitleSource, type TypingAnimation, noteTitle, sortNotes } from "./model";
 import { type Command, type Menu } from "./palette";
 import { playKey } from "./sound";
@@ -8,8 +8,9 @@ import { app, current, els, folderPath, isGrid, saveState, settings, toast, view
 import { renderFolders } from "./list";
 import { changeNotesDir, confirmEmptyTrash, deleteFolder, destroyNote, exportAll, exportNote, importDir, importFiles, moveNote, newFolder, newNote, openFolder, openNote, renameFolder, renameNote, restoreNote, setTitleMode, toggleStar, trashNote } from "./notes";
 import { clearHistoryMenu, folderScope, historyRangeMenu, noteScope, showHistory } from "./history";
-import { backToGallery, restoreFocus, setSetting, setView, toggleFolders } from "./layout";
+import { backToGallery, restoreFocus, searchFor, setSetting, setView, toggleFolders } from "./layout";
 import { followLinkAtCaret, showStats } from "./typing";
+import { linkResolver } from "./vault";
 
 async function openUrl(url: string): Promise<void> {
   if (app.backend.desktop) {
@@ -68,6 +69,55 @@ function randomTheme(): void {
   toast(`theme: ${t.name}`);
 }
 
+/** Open a note, leaving the current folder if it's elsewhere. */
+function goTo(n: Note): void {
+  if (view().folderId !== ALL && view().folderId !== n.folderId) {
+    view().folderId = ALL;
+    els.search.value = "";
+    renderFolders();
+  }
+  openNote(n.id);
+}
+
+const plural = (k: number, word: string) => `${k} ${word}${k === 1 ? "" : "s"}`;
+
+/** Notes that link to `n`. */
+function backlinksMenu(from: Note[]): Menu {
+  return {
+    title: `linked from (${from.length})`,
+    items: [...from].sort(sortNotes).map((x) => ({ label: noteTitle(x), hint: folderPath(x.folderId), run: () => goTo(x) })),
+  };
+}
+
+/** Every #tag with how many notes use it; choosing one searches for it. */
+function tagsMenu(): Menu {
+  const counts = new Map<string, number>();
+  for (const n of app.vault.notes) {
+    if (!n.deletedAt) for (const t of tagsOf(n.body)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  const tags = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return {
+    title: `tags (${tags.length})`,
+    items: tags.map(([t, k]) => ({ label: `#${t}`, hint: plural(k, "note"), run: () => searchFor(`#${t}`) })),
+  };
+}
+
+/** Typing "[[" lists notes to link to; choosing one finishes the link. */
+export function linkPicker(): Menu {
+  const self = current();
+  const live = app.vault.notes.filter((n) => !n.deletedAt);
+  const resolve = linkResolver(live);
+  // execCommand keeps the native undo stack intact
+  const insert = (name: string) => document.execCommand("insertText", false, `${name}]]`);
+  const notes = live.filter((n) => n !== self).sort(sortNotes);
+  return {
+    title: "link to note",
+    seeThrough: true,
+    items: notes.map((n) => ({ label: noteTitle(n), hint: folderPath(n.folderId), run: () => insert(app.vault.linkName(n, resolve)) })),
+    extra: (q) => (q && !resolve(q) ? { label: `new note "${q}"`, hint: "made when you follow the link", run: () => insert(q) } : null),
+  };
+}
+
 export function noteCommands(n: Note): Command[] {
   if (n.deletedAt) {
     return [
@@ -75,9 +125,14 @@ export function noteCommands(n: Note): Command[] {
       { label: "delete note forever", run: () => destroyNote(n) },
     ];
   }
+  const caret = app.editor.ta.selectionStart;
+  const tag = tagAt(n.body, caret);
+  const from = app.vault.backlinks(n);
   return [
     { label: "find in note", hint: "ctrl+f", run: () => app.find.open() },
-    ...(linkAt(n.body, app.editor.ta.selectionStart) ? [{ label: "follow link", hint: "ctrl+enter", run: () => void followLinkAtCaret() }] : []),
+    ...(linkAt(n.body, caret) ? [{ label: "follow link", hint: "ctrl+enter", run: () => void followLinkAtCaret() }] : []),
+    ...(tag ? [{ label: `search #${tag}`, hint: "ctrl+enter", run: () => searchFor(`#${tag}`) }] : []),
+    { label: "linked from", hint: from.length ? plural(from.length, "note") : "no notes", sub: () => backlinksMenu(from) },
     { label: n.starred ? "unstar note" : "star note", hint: "keeps it at the top", run: () => toggleStar(n) },
     { label: "rename note", hint: "file name", run: () => void renameNote(n) },
     {
@@ -135,18 +190,7 @@ export function jumpMenu(): Menu {
     items: app.vault.notes
       .filter((n) => !n.deletedAt)
       .sort(sortNotes)
-      .map((n) => ({
-        label: noteTitle(n),
-        hint: folderPath(n.folderId),
-        run: () => {
-          if (view().folderId !== ALL && view().folderId !== n.folderId) {
-            view().folderId = ALL;
-            els.search.value = "";
-            renderFolders();
-          }
-          openNote(n.id);
-        },
-      })),
+      .map((n) => ({ label: noteTitle(n), hint: folderPath(n.folderId), run: () => goTo(n) })),
   };
 }
 
@@ -162,6 +206,7 @@ function rootMenu(): Menu {
     { label: "new note", hint: "ctrl+n", run: newNote },
     { label: "new folder", hint: "ctrl+shift+n", run: () => void newFolder() },
     { label: "jump to note", hint: "ctrl+p", sub: jumpMenu },
+    { label: "tags", hint: "search by #tag", sub: tagsMenu },
     {
       label: "go to folder",
       sub: () => ({

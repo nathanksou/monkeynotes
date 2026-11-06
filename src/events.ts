@@ -7,7 +7,7 @@ import { renderAll, renderNotes } from "./list";
 import { confirmEmptyTrash, moveNote, toggleStar, newFolder, newNote, openFolder, openNote, renameFolder, stepNote, toggleCollapsed } from "./notes";
 import { applyView, backToGallery, bindResizeHandles, focusGallery, focusSearch, galleryKey, narrow, restoreFocus, setSetting, setView, toggleFolders } from "./layout";
 import { followLinkAtCaret, hideStats, showStats } from "./typing";
-import { folderCommands, jumpMenu, noteCommands, openPalette } from "./commands";
+import { folderCommands, jumpMenu, linkPicker, noteCommands, openPalette } from "./commands";
 
 let searchTimer = 0;
 
@@ -265,9 +265,18 @@ export function bindEvents(): void {
     if (key) playKey(s.sound, s.soundVolume, key);
   });
 
-  // ctrl/cmd+click a [[link]] to follow it
+  // ctrl/cmd+click a [[link]] to follow it, or a #tag to search for it
   app.editor.ta.addEventListener("click", (e) => {
     if (e.ctrlKey || e.metaKey) followLinkAtCaret();
+  });
+
+  // typing "[[" opens a list of notes to link to
+  app.editor.ta.addEventListener("input", (e) => {
+    const ie = e as InputEvent;
+    const ta = app.editor.ta;
+    if (ie.inputType !== "insertText" || ie.data !== "[" || ta.readOnly) return;
+    const before = ta.value.slice(0, ta.selectionStart);
+    if (before.endsWith("[[") && !before.endsWith("[[[")) openPalette(linkPicker());
   });
 
   els.toast.addEventListener("click", () => {

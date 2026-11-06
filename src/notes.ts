@@ -202,6 +202,17 @@ export async function openVault(): Promise<void> {
     renderAll();
     saveState();
   };
+  // a note moved and links to it were rewritten: show the open note's new text
+  next.onLinksUpdated = (notes) => {
+    const n = current();
+    if (n && notes.includes(n)) {
+      const top = els.scroller.scrollTop;
+      app.editor.load(n.body, { caretAt: app.editor.ta.selectionStart });
+      els.scroller.scrollTop = top;
+      paintLinks();
+    }
+    renderNotes();
+  };
   await next.load();
   app.vault = next;
   app.notesDirPath = await app.backend.notesDir();

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Type `[[` to pick a note to link to.
+- Renaming or moving a note updates `[[links]]` to it in other notes.
+- `linked from` in the command line lists the notes that link to the open one.
+- `#tags` are underlined; ctrl/cmd+click one to search for it, and `tags` lists them all.
+
 ## 0.3.0
 
 - Notes are plain markdown files in a folder you choose; nested folders, trash, stars.

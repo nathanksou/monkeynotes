@@ -31,7 +31,9 @@ Want to build it yourself instead? See [development](#development).
 - **adjustable sidebars**: drag the folders sidebar's or the notes list's right edge to resize it (double-click the edge to reset).
 - **typing stats**: the footer shows live wpm and your average. It stays visible while you type. The chart icon beside it opens a full stats view with words and time typed today, your daily streak and a 14-day chart.
 - **typing sounds and animations** (off by default): click, pop, thock or typewriter sounds, synthesized on the fly; letters that float away, sparks, or a caret pulse.
-- **`[[links]]`**: Obsidian-style links are underlined. `ctrl+click` one or press `ctrl+enter` on it to open the note, or create it if it doesn't exist yet.
+- **`[[links]]`**: Obsidian-style links are underlined. Type `[[` to pick a note from a list. `ctrl+click` a link or press `ctrl+enter` on it to open the note, or create it if it doesn't exist yet. When a note is renamed or moved, links to it are updated.
+- **backlinks**: `linked from` in the command line lists every note that links to the open one.
+- **`#tags`**: tags get a dotted underline. `ctrl+click` one (or `ctrl+enter`) to search all notes for it, and `tags` in the command line lists them all.
 - **command line** (`esc` or `ctrl+k`): every action and setting is a few keystrokes away, including themes with live preview.
 - **189 themes**: Monkeytype's whole collection plus a couple of originals, with live preview, and `random theme` when you can't decide.
 - **plain markdown files**: every note is a `.md` file in a folder you choose, so you can sync it with iCloud, Dropbox or git, or open it in any other editor.
@@ -53,7 +55,8 @@ Want to build it yourself instead? See [development](#development).
 | `ctrl+shift+n` | new folder |
 | `ctrl+p` | jump to note |
 | `ctrl+f` | find in note |
-| `ctrl+enter` / `ctrl+click` | follow the `[[link]]` under the caret |
+| `ctrl+enter` / `ctrl+click` | follow the `[[link]]` under the caret, or search for the `#tag` |
+| `[[` | pick a note to link to |
 | `ctrl+shift+f` | search all notes (from any folder) |
 | `ctrl+\` | show / hide the folders sidebar |
 | `ctrl+1` / `ctrl+2` | list view / gallery view |
@@ -120,7 +123,7 @@ src/
   stats-view.ts         the full stats view
   sound.ts              synthesized key sounds
   effects.ts            typing animations
-  links.ts              [[link]] parsing
+  links.ts              [[link]] and #tag parsing
   updates.ts            new-release check
   palette.ts            command line (menus, previews, prompts)
   model.ts              data types, defaults, helpers
@@ -149,7 +152,6 @@ Push a tag such as `v0.1.0`. The `release` workflow then builds macOS (Apple Sil
 - find and replace
 - custom themes
 - markdown preview
-- `[[link]]` autocomplete
 
 ## credits
 

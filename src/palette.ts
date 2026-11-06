@@ -21,6 +21,8 @@ export interface Menu {
   onCancel?: () => void;
   /** No dimming, and the box sits at the bottom, so previews behind it stay visible. */
   seeThrough?: boolean;
+  /** An extra last item for what's been typed (e.g. "link to a new note"), or null. */
+  extra?: (query: string) => Command | null;
 }
 
 interface PromptState {
@@ -204,6 +206,8 @@ export class Palette {
       const exactSet = new Set(exact);
       const loose = menu.items.filter((c) => !exactSet.has(c) && fuzzy(c.label.toLowerCase(), q));
       this.filtered = [...exact, ...loose];
+      const extra = menu.extra?.(this.input.value.trim());
+      if (extra) this.filtered.push(extra);
     } else {
       this.filtered = menu.items;
     }

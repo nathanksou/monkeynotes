@@ -149,6 +149,12 @@ export function backToGallery(): void {
   focusGallery();
 }
 
+/** Search all notes for `q`, as if it was typed in the search box. */
+export function searchFor(q: string): void {
+  els.search.value = q;
+  els.search.dispatchEvent(new Event("input"));
+}
+
 export function focusSearch(): void {
   els.search.focus();
   els.search.select();

@@ -884,6 +884,13 @@ kbd {
   text-underline-offset: 0.2em;
 }
 
+#decor .tag {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--main);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.2em;
+}
+
 /* ------------------------------------------------------------ typing animations */
 
 #fx {

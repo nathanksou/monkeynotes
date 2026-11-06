@@ -18,7 +18,8 @@
 import type { Backend, ExtDir, ExtFile, FileEntry, Scan } from "./backend";
 import { isExists, isNotFound } from "./errors";
 import { baseOf, dirOf, extOf, join, stemOf, swapPrefix } from "./paths";
-import { type Folder, META_FILE, type Note, ROOT, TRASH_DIR, TRASH_TTL_MS, titleLine, uid } from "./model";
+import { type Folder, META_FILE, type Note, ROOT, TRASH_DIR, TRASH_TTL_MS, noteTitle, titleLine, uid } from "./model";
+import { linkTargets, retargetLinks } from "./links";
 
 interface TrashEntry {
   /** folder it was in */
@@ -58,6 +59,39 @@ export function safeName(title: string, fallback = "untitled"): string {
   if (!name) name = fallback;
   if (RESERVED.test(name)) name += "_";
   return name;
+}
+
+/** "a/b.md" -> "a/b" */
+const noExt = (path: string) => path.replace(/\.[^./]+$/, "");
+
+/**
+ * Finds the note a [[link]] points at, like Obsidian: a path ("folder/name"),
+ * then a file name, then a title, then (unless `strict`) the file name following
+ * the link would create. `pathOf` lets a caller ask where links pointed before
+ * a note moved.
+ */
+export function linkResolver(
+  notes: Note[],
+  pathOf = (n: Note) => n.path,
+  strict = false,
+): (target: string) => Note | undefined {
+  const byPath = new Map<string, Note>();
+  const byStem = new Map<string, Note>();
+  const byTitle = new Map<string, Note>();
+  const add = (m: Map<string, Note>, key: string, n: Note) => m.has(key) || m.set(key, n);
+  for (const n of notes) {
+    const p = pathOf(n);
+    if (p) {
+      add(byPath, noExt(p).toLowerCase(), n);
+      add(byStem, stemOf(p).toLowerCase(), n);
+    }
+    add(byTitle, noteTitle(n).toLowerCase(), n);
+  }
+  return (target) => {
+    const t = target.toLowerCase();
+    const exact = byPath.get(t) ?? byStem.get(t) ?? byTitle.get(t);
+    return exact ?? (strict ? undefined : byStem.get(safeName(target.split("/").pop() ?? target).toLowerCase()));
+  };
 }
 
 /** Root first, then depth-first alphabetical, so children follow their parent. */
@@ -125,6 +159,8 @@ export class Vault {
   now: () => number = () => Date.now();
   /** Called when a folder rename fails on disk and is undone (old id, new id). */
   onFolderRenameReverted: (from: string, to: string) => void = () => {};
+  /** Called with the notes whose [[links]] were rewritten because a note they link to moved. */
+  onLinksUpdated: (notes: Note[]) => void = () => {};
 
   /** File name a trashed note had before, so restoring puts it back as it was. */
   private originalName = new WeakMap<Note, string>();
@@ -479,6 +515,7 @@ export class Vault {
             moved = false;
           }
           this.movedTo(n, target);
+          this.relink([[n, from]]);
           if (from.toLowerCase() !== target.toLowerCase()) await this.dropStaleHistory(target);
           await this.be.historyMove(from, target, false).catch((e) => this.onError(`moving history failed: ${e}`));
           if (moved) {
@@ -695,6 +732,60 @@ export class Vault {
     this.setBody(n, body);
   }
 
+  // ---------------------------------------------------------------- links
+
+  private live(): Note[] {
+    return this.notes.filter((n) => !n.deletedAt);
+  }
+
+  /** The note a [[link]] target points at. */
+  resolveLink(target: string): Note | undefined {
+    return linkResolver(this.live())(target);
+  }
+
+  /** Notes with a [[link]] to `n`. */
+  backlinks(n: Note): Note[] {
+    const resolve = linkResolver(this.live());
+    return this.live().filter((x) => x !== n && linkTargets(x.body).some((t) => resolve(t) === n));
+  }
+
+  /** What to write in a [[link]] to `n`: its file name, or its path when another note has the same name. */
+  linkName(n: Note, resolve = linkResolver(this.live())): string {
+    if (!n.path) return noteTitle(n);
+    const stem = stemOf(n.path);
+    return resolve(stem) === n ? stem : noExt(n.path);
+  }
+
+  /**
+   * Notes' files moved (renamed, moved to another folder): rewrite [[links]]
+   * that pointed to them and no longer do. A note's links to itself are left
+   * alone, since it may be the note being typed in. Linking notes keep their
+   * place in the list: a rename elsewhere isn't an edit of theirs.
+   */
+  private relink(moves: [Note, string][]): void {
+    const movedFrom = new Map(moves.filter(([n, from]) => dirOf(from) !== TRASH_DIR && dirOf(n.path) !== TRASH_DIR));
+    if (!movedFrom.size) return;
+    const live = this.live();
+    const before = linkResolver(live, (x) => movedFrom.get(x) ?? x.path);
+    // strict: [[old/name]] still finds a moved note by its name alone, but should say where it is now
+    const after = linkResolver(live, undefined, true);
+    const changed: Note[] = [];
+    for (const x of live) {
+      const body = retargetLinks(x.body, (t) => {
+        const was = before(t);
+        if (!was || was === x || !movedFrom.has(was) || after(t) === was) return null;
+        // keep the link's style: "folder/name" stays a path, a bare name stays a name if it can
+        return t.includes("/") ? noExt(was.path) : this.linkName(was, after);
+      });
+      if (body !== x.body) {
+        x.body = body;
+        this.touch(x);
+        changed.push(x);
+      }
+    }
+    if (changed.length) this.onLinksUpdated(changed);
+  }
+
   // ---------------------------------------------------------------- folders
 
   toggleFolderStar(id: string): void {
@@ -791,7 +882,15 @@ export class Vault {
         await this.be.historyMove(id, next, true).catch((e) => this.onError(`moving history failed: ${e}`));
         // every note still on disk under the old name, including ones trashed
         // but not yet moved (paths already in .trash/ never match)
-        for (const n of this.notes) if (n.path) n.path = swapPrefix(n.path, id, next);
+        const moved: [Note, string][] = [];
+        for (const n of this.notes) {
+          const p = n.path && swapPrefix(n.path, id, next);
+          if (p && p !== n.path) {
+            moved.push([n, n.path]);
+            n.path = p;
+          }
+        }
+        this.relink(moved);
         this.metaDirty = true;
       },
       () => {

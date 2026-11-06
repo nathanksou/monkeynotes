@@ -1,12 +1,10 @@
-import { linkAt, linkRanges } from "./links";
-import { stemOf } from "./paths";
-import { ALL, noteTitle } from "./model";
+import { linkAt, linkRanges, tagAt, tagRanges } from "./links";
+import { ALL } from "./model";
 import { renderStatsView } from "./stats-view";
 import { app, current, els, saveState, settings, targetFolder, toast, view } from "./app";
 import { renderFolders } from "./list";
 import { openNote } from "./notes";
-import { safeName } from "./vault";
-import { restoreFocus } from "./layout";
+import { restoreFocus, searchFor } from "./layout";
 
 export function resetLiveStats(): void {
   els.app.classList.remove("typing");
@@ -65,17 +63,7 @@ export function hideStats(): void {
 
 /** Open the note a [[link]] points at, creating it if it doesn't exist (like Obsidian). */
 function followLink(target: string): void {
-  const t = target.toLowerCase();
-  // "folder/name" first, then a bare file name, then a title
-  const pathNoExt = (p: string) => p.replace(/\.[^./]+$/, "").toLowerCase();
-  const live = app.vault.notes.filter((n) => !n.deletedAt);
-  // the file name a link creates (below), so following it again finds that note
-  const created = safeName(target.split("/").pop() ?? target).toLowerCase();
-  let n =
-    live.find((x) => x.path && pathNoExt(x.path) === t) ??
-    live.find((x) => x.path && stemOf(x.path).toLowerCase() === t) ??
-    live.find((x) => noteTitle(x).toLowerCase() === t) ??
-    live.find((x) => x.path && stemOf(x.path).toLowerCase() === created);
+  let n = app.vault.resolveLink(target);
   if (!n) {
     const from = current();
     const folder = from && !from.deletedAt ? from.folderId : targetFolder();
@@ -91,25 +79,36 @@ function followLink(target: string): void {
   openNote(n.id);
 }
 
+/** Follow the [[link]] under the caret, or search all notes for the #tag under it. */
 export function followLinkAtCaret(): boolean {
-  const target = linkAt(app.editor.ta.value, app.editor.ta.selectionStart);
-  if (target) followLink(target);
-  return !!target;
+  const { value, selectionStart } = app.editor.ta;
+  const target = linkAt(value, selectionStart);
+  if (target) {
+    followLink(target);
+    return true;
+  }
+  const tag = tagAt(value, selectionStart);
+  if (tag) searchFor(`#${tag}`);
+  return !!tag;
 }
 
-/** Underline [[links]] on a layer behind the text. */
+/** Underline [[links]] and #tags on a layer behind the text. */
 let decorTimer = 0;
 
-/** One paragraph with its [[links]] wrapped for underlining. */
-function renderLinks(text: string): Node[] {
-  const ranges = linkRanges(text);
+/** One paragraph with its [[links]] and #tags wrapped for underlining. */
+function renderDecor(text: string): Node[] {
+  const ranges = [
+    ...linkRanges(text).map(([a, b]) => [a, b, "link"] as const),
+    ...tagRanges(text).map(([a, b]) => [a, b, "tag"] as const),
+  ].sort((x, y) => x[0] - y[0]);
   if (!ranges.length) return [document.createTextNode(text || "\u200b")];
   const parts: Node[] = [];
   let last = 0;
-  for (const [a, b] of ranges) {
+  for (const [a, b, kind] of ranges) {
+    if (a < last) continue; // a #tag inside a [[link]]: the link wins
     parts.push(document.createTextNode(text.slice(last, a)));
     const u = document.createElement("span");
-    u.className = "link";
+    u.className = kind;
     u.textContent = text.slice(a, b);
     parts.push(u);
     last = b;
@@ -122,8 +121,8 @@ export function paintLinks(): void {
   clearTimeout(decorTimer);
   decorTimer = window.setTimeout(() => {
     const text = app.editor.ta.value;
-    if (!text.includes("[[")) return app.linkLayer.clear();
-    app.linkLayer.update(text.split("\n"), (t) => t, renderLinks);
+    if (!text.includes("[[") && !text.includes("#")) return app.linkLayer.clear();
+    app.linkLayer.update(text.split("\n"), (t) => t, renderDecor);
   }, 60);
 }
 
