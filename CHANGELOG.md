@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Type `[[` to pick a note to link to.
 - Renaming or moving a note updates `[[links]]` to it in other notes.
