@@ -423,7 +423,11 @@ pub fn scan_root_with(root: &Path, known: &HashMap<String, u64>, mut budget: Bud
     let mut out = ScanOut::default();
     read_notes(root, "", known, &mut out, &mut budget)?;
     scan_dirs(root, "", MAX_DEPTH, known, &mut out, &mut budget)?;
-    read_notes(root, TRASH_DIR, known, &mut out, &mut budget)?;
+    // a .trash that's a symlink would pull in notes from outside the folder
+    let trash_is_dir = fs::symlink_metadata(root.join(TRASH_DIR)).is_ok_and(|m| m.is_dir());
+    if trash_is_dir {
+        read_notes(root, TRASH_DIR, known, &mut out, &mut budget)?;
+    }
     out.dirs.sort_by_key(|d| d.to_lowercase());
     out.meta = read_meta(&root.join(META_FILE));
     Ok(out)
@@ -860,7 +864,7 @@ mod tests {
         write_atomic(&f, "one").unwrap();
         write_atomic(&f, "two").unwrap();
         assert_eq!(fs::read_to_string(&f).unwrap(), "two");
-        assert_eq!(names(&root), [long.clone()]);
+        assert_eq!(names(&root), std::slice::from_ref(&long));
         // failure (target is a folder) leaves no temp file behind
         let d = root.join("dir.md");
         fs::create_dir(&d).unwrap();
@@ -892,6 +896,21 @@ mod tests {
         assert_eq!(fs::read_to_string(&f).unwrap(), "first");
         assert_eq!(names(&root), ["a.md"]);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_trash_is_not_read() {
+        let root = scratch("trashlink");
+        let outside = scratch("trashlink-outside");
+        fs::write(outside.join("secret.md"), "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(TRASH_DIR)).unwrap();
+        fs::write(root.join("a.md"), "a").unwrap();
+        let out = scan_root(&root, &HashMap::new()).unwrap();
+        let paths: Vec<_> = out.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.md"]);
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
     }
 
     #[test]
@@ -957,7 +976,8 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
-    #[cfg(unix)]
+    // macOS file systems refuse names that aren't UTF-8, so there's nothing to skip there
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn non_utf8_names_are_skipped_everywhere() {
         use std::os::unix::ffi::OsStrExt;

@@ -6,6 +6,24 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 
 <p align="center"><img src="docs/gallery.png" width="80%" alt="gallery view: notes as a grid of cards" /></p>
 
+## download
+
+No need to build anything. Grab the installer for your computer from the **[latest release](https://github.com/nathanksou/monkeynotes/releases/latest)**:
+
+| your computer | file to download |
+| --- | --- |
+| Mac with Apple Silicon (M1 or newer) | `monkeynotes_<version>_aarch64.dmg` |
+| Mac with an Intel chip | `monkeynotes_<version>_x64.dmg` |
+| Windows | `monkeynotes_<version>_x64-setup.exe` (or the `.msi`) |
+| Linux | `.AppImage` (runs anywhere), `.deb` (Debian, Ubuntu) or `.rpm` (Fedora) |
+
+The builds aren't signed yet, so your OS will warn you the first time you open the app:
+
+- **macOS**: if it says the app "can't be opened", open **System Settings → Privacy & Security** and click **Open Anyway**. If it says the app "is damaged", run `xattr -cr /Applications/monkeynotes.app` in Terminal once, then open it again.
+- **Windows**: on the SmartScreen prompt, click **More info**, then **Run anyway**.
+
+Want to build it yourself instead? See [development](#development).
+
 ## features
 
 - **organized like Apple Notes**: a toolbar across the top (sidebar toggle on the left; list/gallery switch, new note, search and settings on the right), a folders sidebar (folders nest up to 8 levels deep), then either a **list view** (notes list next to the editor) or a **gallery view** (a grid of note cards; click one to open it full size, and the back arrow returns to the gallery). The first line of a note is its title, and the list is sorted by last edit, with starred notes on top.

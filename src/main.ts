@@ -23,8 +23,17 @@ async function bindWindowClose(): Promise<void> {
   if (!app.backend.desktop) return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   // Make sure the last keystrokes hit the disk before the window goes away.
-  await getCurrentWindow().onCloseRequested(async () => {
+  let closeAnyway = false;
+  await getCurrentWindow().onCloseRequested(async (event) => {
+    const failuresBefore = app.vault.failures;
     await Promise.all([app.vault.flush(), writeState()]);
+    // A save failed (disk full, drive gone): stay open so the text isn't lost.
+    // Closing a second time quits anyway.
+    if (app.vault.failures !== failuresBefore && !closeAnyway) {
+      closeAnyway = true;
+      event.preventDefault();
+      toast("your latest changes couldn't be saved. close again to quit anyway", undefined, 10000);
+    }
   });
 }
 

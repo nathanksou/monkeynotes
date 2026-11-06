@@ -370,7 +370,12 @@ export class Vault {
       const q = this.queue;
       await q;
       const settled = q === this.queue && !this.metaDirty && this.dirty.size === 0;
-      if (settled || this.failures !== failuresBefore) return;
+      if (settled) return;
+      if (this.failures !== failuresBefore) {
+        // try again in a while (an unplugged drive may come back), without hammering the disk
+        this.timer = setTimeout(() => void this.flush(), 30_000);
+        return;
+      }
     }
   }
 

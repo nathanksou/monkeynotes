@@ -158,6 +158,17 @@ impl NotesDir {
     fn root(&self) -> PathBuf {
         self.0.lock().unwrap().0.clone()
     }
+
+    /// The notes folder, for commands that read or write in it. A folder the
+    /// user picked that has gone missing (an unplugged drive) is an error, so
+    /// a save can't quietly rebuild it as an empty stand-in on the main disk.
+    fn live_root(&self) -> Res<PathBuf> {
+        let (root, chosen) = self.0.lock().unwrap().clone();
+        if chosen && !root.is_dir() {
+            return Err(format!("NOT_FOUND: {}", root.display()));
+        }
+        Ok(root)
+    }
 }
 
 fn default_root(app: &AppHandle) -> PathBuf {
@@ -337,7 +348,7 @@ async fn scan(dir: State<'_, NotesDir>, known: Option<HashMap<String, u64>>) -> 
 #[tauri::command]
 async fn write_file(dir: State<'_, NotesDir>, path: String, contents: String, create_new: bool) -> Res<()> {
     fsutil::check_note_len(contents.len())?;
-    let target = note_path(&dir.root(), &path, true)?;
+    let target = note_path(&dir.live_root()?, &path, true)?;
     if create_new {
         write_new(&target, &contents, &path)
     } else {
@@ -348,7 +359,7 @@ async fn write_file(dir: State<'_, NotesDir>, path: String, contents: String, cr
 /// Rename a note, or a folder. Never overwrites (EEXIST).
 #[tauri::command]
 async fn rename_path(dir: State<'_, NotesDir>, from: String, to: String) -> Res<()> {
-    let root = dir.root();
+    let root = dir.live_root()?;
     let (src, dst) = if resolve(&root, &from)?.is_dir() {
         (folder_path(&root, &from)?, folder_path(&root, &to)?)
     } else {
@@ -359,7 +370,7 @@ async fn rename_path(dir: State<'_, NotesDir>, from: String, to: String) -> Res<
 
 #[tauri::command]
 async fn remove_file(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    match fs::remove_file(note_path(&dir.root(), &path, false)?) {
+    match fs::remove_file(note_path(&dir.live_root()?, &path, false)?) {
         Err(e) if e.kind() != ErrorKind::NotFound => Err(err(e)),
         _ => Ok(()),
     }
@@ -367,14 +378,14 @@ async fn remove_file(dir: State<'_, NotesDir>, path: String) -> Res<()> {
 
 #[tauri::command]
 async fn make_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    fs::create_dir_all(folder_path(&dir.root(), &path)?).map_err(err)
+    fs::create_dir_all(folder_path(&dir.live_root()?, &path)?).map_err(err)
 }
 
 /// Remove a folder. Only succeeds when it is empty (apart from files like
 /// .DS_Store the OS drops there), so real files are never lost.
 #[tauri::command]
 async fn remove_dir(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    let target = folder_path(&dir.root(), &path)?;
+    let target = folder_path(&dir.live_root()?, &path)?;
     fsutil::remove_dir_if_empty(&target)
 }
 
@@ -438,18 +449,18 @@ fn save_version(root: &Path, path: &str, contents: &str, now: u64) -> Res<u64> {
 #[tauri::command]
 async fn history_save(dir: State<'_, NotesDir>, path: String, contents: String) -> Res<u64> {
     fsutil::check_note_len(contents.len())?;
-    save_version(&dir.root(), &path, &contents, now_ms())
+    save_version(&dir.live_root()?, &path, &contents, now_ms())
 }
 
 /// A note's versions, newest first.
 #[tauri::command]
 async fn history_list(dir: State<'_, NotesDir>, path: String) -> Res<Vec<u64>> {
-    Ok(versions_in(&history_dir(&dir.root(), &path, false)?))
+    Ok(versions_in(&history_dir(&dir.live_root()?, &path, false)?))
 }
 
 #[tauri::command]
 async fn history_read(dir: State<'_, NotesDir>, path: String, at: u64) -> Res<String> {
-    let file = history_dir(&dir.root(), &path, false)?.join(format!("{at}.md"));
+    let file = history_dir(&dir.live_root()?, &path, false)?.join(format!("{at}.md"));
     fs::read_to_string(file).map_err(err)
 }
 
@@ -496,7 +507,7 @@ fn move_history(root: &Path, from: &str, to: &str, folder: bool) -> Res<()> {
 /// Move a note's history after it was renamed (or a folder's, with `folder`).
 #[tauri::command]
 async fn history_move(dir: State<'_, NotesDir>, from: String, to: String, folder: bool) -> Res<()> {
-    move_history(&dir.root(), &from, &to, folder)
+    move_history(&dir.live_root()?, &from, &to, folder)
 }
 
 /// Remove versions saved at or after `since` (all of them when None). With
@@ -518,7 +529,7 @@ fn clear_versions(dir: &Path, since: Option<u64>, dry_run: bool, recursive: bool
         let Some(at) = version_of(&entry.file_name()) else {
             continue;
         };
-        if since.map_or(true, |s| at >= s) && (dry_run || fs::remove_file(&path).is_ok()) {
+        if since.is_none_or(|s| at >= s) && (dry_run || fs::remove_file(&path).is_ok()) {
             removed += 1;
         }
     }
@@ -532,7 +543,7 @@ fn clear_versions(dir: &Path, since: Option<u64>, dry_run: bool, recursive: bool
 /// time). With `dry_run`, only counts.
 #[tauri::command]
 async fn history_clear(dir: State<'_, NotesDir>, paths: Vec<String>, since: Option<u64>, dry_run: bool) -> Res<u64> {
-    let root = dir.root();
+    let root = dir.live_root()?;
     let mut removed = 0;
     for p in paths {
         removed += clear_versions(&history_dir(&root, &p, false)?, since, dry_run, false);
@@ -543,7 +554,7 @@ async fn history_clear(dir: State<'_, NotesDir>, paths: Vec<String>, since: Opti
 /// Clear version history for every note, from `since` on (or all time).
 #[tauri::command]
 async fn history_clear_all(dir: State<'_, NotesDir>, since: Option<u64>, dry_run: bool) -> Res<u64> {
-    let root = dir.root();
+    let root = dir.live_root()?;
     no_symlinks(&root, HISTORY_DIR)?;
     Ok(clear_versions(&root.join(HISTORY_DIR), since, dry_run, true))
 }
@@ -552,7 +563,7 @@ async fn history_clear_all(dir: State<'_, NotesDir>, since: Option<u64>, dry_run
 /// takes a path that still has someone else's old history).
 #[tauri::command]
 async fn history_delete(dir: State<'_, NotesDir>, path: String) -> Res<()> {
-    clear_versions(&history_dir(&dir.root(), &path, false)?, None, false, false);
+    clear_versions(&history_dir(&dir.live_root()?, &path, false)?, None, false, false);
     Ok(())
 }
 
@@ -1185,7 +1196,8 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
-    #[cfg(unix)]
+    // macOS file systems refuse names that aren't UTF-8, so there's nothing to skip there
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn scan_skips_names_that_are_not_valid_utf8() {
         use std::os::unix::ffi::OsStrExt;

@@ -17,7 +17,9 @@ export function bindEvents(): void {
     els.app.classList.remove("drawer-open");
     applyView();
   });
-  const mod = (e: KeyboardEvent) => e.ctrlKey || e.metaKey;
+  // On Windows, AltGr (how many layouts type \ @ ń ...) arrives as ctrl+alt. No
+  // shortcut uses ctrl+alt, so treat it as typing, not as ctrl.
+  const mod = (e: KeyboardEvent) => e.metaKey || (e.ctrlKey && !e.altKey);
 
   document.addEventListener("keydown", (e) => {
     if (app.palette.isOpen || e.isComposing) return;
@@ -290,7 +292,7 @@ export function bindEvents(): void {
       // changed in another app: keep the caret and scroll where they were
       else if (changed && app.currentId === openBefore) {
         const top = els.scroller.scrollTop;
-        app.editor.load(n.body, { caretAt: app.editor.ta.selectionStart });
+        app.editor.load(n.body, { readOnly: !!n.deletedAt, caretAt: app.editor.ta.selectionStart });
         els.scroller.scrollTop = top;
         app.find.refresh();
       }
