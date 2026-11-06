@@ -6,6 +6,8 @@ A minimal, distraction-free desktop notes app. It's organized simply, like Apple
 
 <p align="center"><img src="docs/gallery.png" width="80%" alt="gallery view: notes as a grid of cards" /></p>
 
+<p align="center"><img src="docs/links.png" width="80%" alt="typing [[ opens a picker to link to another note" /></p>
+
 ## download
 
 No need to build anything. Grab the installer for your computer from the **[latest release](https://github.com/nathanksou/monkeynotes/releases/latest)**:
