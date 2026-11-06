@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 
 - In an Obsidian vault, files are never renamed just because their name matches their first line.
 - On a Mac, option+↑/↓ moves between paragraphs again; previous / next note is cmd+option+↑/↓.
