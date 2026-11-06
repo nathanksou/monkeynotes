@@ -192,7 +192,6 @@ export async function exportAll(): Promise<void> {
 
 /** Load the current notes folder into a fresh vault. Throws if it can't be read. */
 export async function openVault(): Promise<void> {
-  if (app.vault) await app.vault.flush();
   const next = new Vault(app.backend);
   next.onError = (m) => toast(m, undefined, 6000);
   next.titleFromFile = settings().titleSource === "file name";
@@ -218,18 +217,28 @@ export async function changeNotesDir(choose: boolean): Promise<void> {
       return;
     }
   }
+  // The backend switches folders before telling us, so the old vault must not
+  // touch the disk from here on, and typing waits until the new folder is in.
+  const old = app.vault as Vault | undefined;
+  const wasReadOnly = app.editor.ta.readOnly;
+  old?.freeze();
+  app.editor.ta.readOnly = true;
+  const cancel = () => {
+    old?.unfreeze();
+    app.editor.ta.readOnly = wasReadOnly;
+  };
   try {
     if (choose) {
-      if (!(await app.backend.chooseNotesDir())) return;
+      if (!(await app.backend.chooseNotesDir())) return cancel();
     } else {
       await app.backend.resetNotesDir(true);
     }
   } catch (e) {
+    cancel();
     toast(`couldn't change the notes folder: ${e}`);
     return;
   }
-  // From here the backend points at the new folder, so the old vault must not
-  // write again. If the new folder can't be read, stop and say so instead.
+  // If the new folder can't be read, stop and say so instead.
   try {
     await openVault();
   } catch (e) {

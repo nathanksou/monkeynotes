@@ -108,6 +108,21 @@ describe("unreadable metadata", () => {
   });
 });
 
+describe("switching notes folders", () => {
+  it("writes nothing while frozen, and saves what waited once unfrozen", async () => {
+    const { be, v } = await open({ "a.md": "a\noriginal" });
+    const n = v.notes[0];
+    v.setBody(n, "a\nedited");
+    v.freeze();
+    await v.flush();
+    expect(await v.reload(n.id)).toBe(false);
+    expect(be.files.get("a.md")?.body).toBe("a\noriginal");
+    v.unfreeze();
+    await v.flush();
+    expect(be.files.get("a.md")?.body).toBe("a\nedited");
+  });
+});
+
 describe("failing file operations", () => {
   it("removes a folder again when creating it fails", async () => {
     const { be, v, errors } = await open();

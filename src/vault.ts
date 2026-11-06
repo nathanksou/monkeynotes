@@ -103,6 +103,8 @@ export class Vault {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private lastMeta = "";
   private metaDirty = false;
+  /** While frozen nothing touches the disk (the backend may be switching folders). */
+  private frozen = false;
   /** Lower-cased paths we found to exist on disk without being one of our notes. */
   private occupied = new Set<string>();
   /** File modified times from the last scan, so unchanged files aren't re-read. */
@@ -123,6 +125,21 @@ export class Vault {
   now: () => number = () => Date.now();
   /** Called when a folder rename fails on disk and is undone (old id, new id). */
   onFolderRenameReverted: (from: string, to: string) => void = () => {};
+
+  /**
+   * Stop reading and writing, e.g. while the notes folder is being switched,
+   * so nothing from this vault lands in the new folder. Pending saves wait.
+   */
+  freeze(): void {
+    this.frozen = true;
+    clearTimeout(this.timer);
+  }
+
+  /** Undo freeze() (the switch was cancelled) and save whatever is waiting. */
+  unfreeze(): void {
+    this.frozen = false;
+    this.schedule();
+  }
   /** File name a trashed note had before, so restoring puts it back as it was. */
   private originalName = new WeakMap<Note, string>();
   /** Requested file names for imported notes that haven't been written yet. */
@@ -177,6 +194,7 @@ export class Vault {
    * it was reading always keep their in-memory text.
    */
   async reload(openId: string | null): Promise<boolean> {
+    if (this.frozen) return false;
     // Scan before saving: if another app changed a file we have unsaved edits
     // for, reconcile keeps its version in history before our save replaces it.
     const mark = this.clock;
@@ -335,7 +353,10 @@ export class Vault {
 
   /** Run `op` after everything already queued. Failures are reported, never thrown. */
   private run(label: string, op: () => Promise<unknown>, onFail?: () => void): Promise<void> {
-    const p = this.queue.then(op).then(
+    const p = this.queue.then(() => {
+      if (!this.frozen) return op();
+      onFail?.(); // skipped, not failed: a save stays pending
+    }).then(
       () => undefined,
       (e) => {
         this.failures++;
@@ -358,6 +379,7 @@ export class Vault {
    */
   async flush(): Promise<void> {
     clearTimeout(this.timer);
+    if (this.frozen) return;
     const failuresBefore = this.failures;
     for (;;) {
       const pending = [...this.dirty];
@@ -381,6 +403,7 @@ export class Vault {
 
   private schedule(): void {
     clearTimeout(this.timer);
+    if (this.frozen) return;
     this.timer = setTimeout(() => void this.flush(), 400);
   }
 
