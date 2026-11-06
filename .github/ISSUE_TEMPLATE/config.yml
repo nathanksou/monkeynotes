@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/nathanksou/monkeynotes/security/advisories/new
+    about: Anything that could lose or expose someone's notes. Please report it privately.
