@@ -43,6 +43,7 @@ const HISTORY_DIR: &str = ".monkeynotes/history";
 /// Versions kept per note, and for how long.
 const HISTORY_KEEP: usize = 50;
 const HISTORY_MAX_AGE_MS: u64 = 90 * 24 * 60 * 60 * 1000;
+const YEAR_MS: u64 = 365 * 24 * 60 * 60 * 1000;
 
 // ------------------------------------------------------------------ helpers
 
@@ -329,19 +330,31 @@ fn scan_root(root: &Path, known: &HashMap<String, u64>) -> Res<Scan> {
     })
 }
 
+/// Run slow disk work (or a native dialog, which waits for the user) on a
+/// thread meant for blocking, so it doesn't hold up the workers that every
+/// other command runs on.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Res<T> + Send + 'static) -> Res<T> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Read every note in the notes folder, its folders and the trash. Files whose
 /// modified time matches `known` come back without a body.
 #[tauri::command]
 async fn scan(dir: State<'_, NotesDir>, known: Option<HashMap<String, u64>>) -> Res<Scan> {
     let (root, chosen) = dir.0.lock().unwrap().clone();
-    if !root.is_dir() {
-        if chosen {
-            // An unplugged drive or unmounted volume: don't create a phantom folder.
-            return Err(format!("NOT_FOUND: {}", root.display()));
+    blocking(move || {
+        if !root.is_dir() {
+            if chosen {
+                // An unplugged drive or unmounted volume: don't create a phantom folder.
+                return Err(format!("NOT_FOUND: {}", root.display()));
+            }
+            fs::create_dir_all(&root).map_err(err)?;
         }
-        fs::create_dir_all(&root).map_err(err)?;
-    }
-    scan_root(&root, &known.unwrap_or_default())
+        scan_root(&root, &known.unwrap_or_default())
+    })
+    .await
 }
 
 // ------------------------------------------------------------------ note files
@@ -454,9 +467,16 @@ fn versions_in(dir: &Path) -> Vec<u64> {
 }
 
 /// Keep the newest HISTORY_KEEP versions younger than HISTORY_MAX_AGE_MS.
+/// If the clock says over a year has passed since the version before the newest,
+/// it's more likely wrong (a bad date for a moment) than right, and trusting it
+/// would make every version look old: then only the count limit applies.
 fn prune_history(dir: &Path, now: u64) {
-    for (i, at) in versions_in(dir).into_iter().enumerate() {
-        if i >= HISTORY_KEEP || now.saturating_sub(at) > HISTORY_MAX_AGE_MS {
+    let versions = versions_in(dir); // newest first
+    let clock_ok = versions
+        .get(1)
+        .is_none_or(|&previous| now.saturating_sub(previous) <= YEAR_MS);
+    for (i, at) in versions.into_iter().enumerate() {
+        if i >= HISTORY_KEEP || (clock_ok && now.saturating_sub(at) > HISTORY_MAX_AGE_MS) {
             let _ = fs::remove_file(dir.join(format!("{at}.md")));
         }
     }
@@ -523,8 +543,8 @@ fn move_history(root: &Path, from: &str, to: &str, folder: bool) -> Res<()> {
     let result = move_it(&tmp);
     // If that failed (or left something behind), put the folder back under its old
     // name instead of stranding it under the temp name.
-    if fs::symlink_metadata(&tmp).is_ok() && fs::symlink_metadata(&src).is_err() {
-        let _ = fs::rename(&tmp, &src);
+    if fs::symlink_metadata(&tmp).is_ok() {
+        let _ = fsutil::move_noreplace(&tmp, &src); // never onto a folder that appeared meanwhile
     }
     result
 }
@@ -569,19 +589,25 @@ fn clear_versions(dir: &Path, since: Option<u64>, dry_run: bool, recursive: bool
 #[tauri::command]
 async fn history_clear(dir: State<'_, NotesDir>, paths: Vec<String>, since: Option<u64>, dry_run: bool) -> Res<u64> {
     let root = dir.live_root()?;
-    let mut removed = 0;
-    for p in paths {
-        removed += clear_versions(&history_dir(&root, &p, false)?, since, dry_run, false);
-    }
-    Ok(removed)
+    blocking(move || {
+        let mut removed = 0;
+        for p in paths {
+            removed += clear_versions(&history_dir(&root, &p, false)?, since, dry_run, false);
+        }
+        Ok(removed)
+    })
+    .await
 }
 
 /// Clear version history for every note, from `since` on (or all time).
 #[tauri::command]
 async fn history_clear_all(dir: State<'_, NotesDir>, since: Option<u64>, dry_run: bool) -> Res<u64> {
     let root = dir.live_root()?;
-    no_symlinks(&root, HISTORY_DIR)?;
-    Ok(clear_versions(&root.join(HISTORY_DIR), since, dry_run, true))
+    blocking(move || {
+        no_symlinks(&root, HISTORY_DIR)?;
+        Ok(clear_versions(&root.join(HISTORY_DIR), since, dry_run, true))
+    })
+    .await
 }
 
 /// Forget a note's history (when the note is deleted for good, or a new note
@@ -625,74 +651,83 @@ fn to_ext_dir(d: fsutil::ExtDir) -> ExtDir {
 /// Ask for note files to import and return their contents.
 #[tauri::command]
 async fn import_files(app: AppHandle) -> Res<Option<Vec<ExtFile>>> {
-    let Some(picked) = app
-        .dialog()
-        .file()
-        .set_title("import notes")
-        .add_filter("notes", &NOTE_EXTS)
-        .blocking_pick_files()
-    else {
-        return Ok(None);
-    };
-    let mut out = Vec::new();
-    let mut failed = Vec::new();
-    // Importing more than the aggregate cap fails with a TOO_LARGE error.
-    let mut budget = fsutil::Budget::standard();
-    for p in picked {
-        let path = dialog_path(p)?;
-        let Some(name) = fsutil::utf8_stem(&path) else {
-            failed.push(format!("{}: the file name isn't valid UTF-8", path.display()));
-            continue;
+    blocking(move || {
+        let Some(picked) = app
+            .dialog()
+            .file()
+            .set_title("import notes")
+            .add_filter("notes", &NOTE_EXTS)
+            .blocking_pick_files()
+        else {
+            return Ok(None);
         };
-        match fsutil::read_note_file(&path) {
-            Ok(body) => {
-                if !budget.take(body.len() as u64) {
-                    return Err(budget.error());
+        let mut out = Vec::new();
+        let mut failed = Vec::new();
+        // Importing more than the aggregate cap fails with a TOO_LARGE error.
+        let mut budget = fsutil::Budget::standard();
+        for p in picked {
+            let path = dialog_path(p)?;
+            let Some(name) = fsutil::utf8_stem(&path) else {
+                failed.push(format!("{}: the file name isn't valid UTF-8", path.display()));
+                continue;
+            };
+            match fsutil::read_note_file(&path) {
+                Ok(body) => {
+                    if !budget.take(body.len() as u64) {
+                        return Err(budget.error());
+                    }
+                    out.push(ExtFile { name, body });
                 }
-                out.push(ExtFile { name, body });
+                Err(e) => failed.push(e), // e.g. not UTF-8: skip it, import the rest
             }
-            Err(e) => failed.push(e), // e.g. not UTF-8: skip it, import the rest
         }
-    }
-    if out.is_empty() && !failed.is_empty() {
-        return Err(failed.join("; "));
-    }
-    Ok(Some(out))
+        if out.is_empty() && !failed.is_empty() {
+            return Err(failed.join("; "));
+        }
+        Ok(Some(out))
+    })
+    .await
 }
 
 /// Ask for a folder to import and return its notes, including subfolders.
 #[tauri::command]
 async fn import_dir(app: AppHandle) -> Res<Option<ExtDir>> {
-    let Some(picked) = app
-        .dialog()
-        .file()
-        .set_title("import a folder of notes")
-        .blocking_pick_folder()
-    else {
-        return Ok(None);
-    };
-    // More than the aggregate cap (256 MiB / 50,000 notes) fails with TOO_LARGE.
-    let mut budget = fsutil::Budget::standard();
-    let dir = fsutil::read_ext_dir(&dialog_path(picked)?, fsutil::MAX_DEPTH, &mut budget)?;
-    Ok(Some(to_ext_dir(dir)))
+    blocking(move || {
+        let Some(picked) = app
+            .dialog()
+            .file()
+            .set_title("import a folder of notes")
+            .blocking_pick_folder()
+        else {
+            return Ok(None);
+        };
+        // More than the aggregate cap (256 MiB / 50,000 notes) fails with TOO_LARGE.
+        let mut budget = fsutil::Budget::standard();
+        let dir = fsutil::read_ext_dir(&dialog_path(picked)?, fsutil::MAX_DEPTH, &mut budget)?;
+        Ok(Some(to_ext_dir(dir)))
+    })
+    .await
 }
 
 /// Save one note wherever the user chooses. Returns false if cancelled.
 #[tauri::command]
 async fn export_note(app: AppHandle, name: String, contents: String) -> Res<bool> {
-    fsutil::check_note_len(contents.len())?;
-    let Some(picked) = app
-        .dialog()
-        .file()
-        .set_title("export note")
-        .set_file_name(format!("{name}.md"))
-        .add_filter("markdown", &["md"])
-        .blocking_save_file()
-    else {
-        return Ok(false);
-    };
-    write_atomic(&dialog_path(picked)?, &contents)?;
-    Ok(true)
+    blocking(move || {
+        fsutil::check_note_len(contents.len())?;
+        let Some(picked) = app
+            .dialog()
+            .file()
+            .set_title("export note")
+            .set_file_name(format!("{name}.md"))
+            .add_filter("markdown", &["md"])
+            .blocking_save_file()
+        else {
+            return Ok(false);
+        };
+        write_atomic(&dialog_path(picked)?, &contents)?;
+        Ok(true)
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -708,50 +743,53 @@ struct ExportFile {
 /// if cancelled.
 #[tauri::command]
 async fn export_all(app: AppHandle, date: String, files: Vec<ExportFile>) -> Res<Option<String>> {
-    // Check sizes before bothering the user with a dialog.
-    let mut budget = fsutil::Budget::standard();
-    for f in &files {
-        fsutil::check_note_len(f.body.len())?;
-        if !budget.take(f.body.len() as u64) {
-            return Err(budget.error());
+    blocking(move || {
+        // Check sizes before bothering the user with a dialog.
+        let mut budget = fsutil::Budget::standard();
+        for f in &files {
+            fsutil::check_note_len(f.body.len())?;
+            if !budget.take(f.body.len() as u64) {
+                return Err(budget.error());
+            }
         }
-    }
-    let Some(picked) = app
-        .dialog()
-        .file()
-        .set_title("export all notes into...")
-        .blocking_pick_folder()
-    else {
-        return Ok(None);
-    };
-    let parent = dialog_path(picked)?;
-    let date: String = date
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '-')
-        .take(10)
-        .collect();
-    let dest = (1..1000)
-        .map(|i| {
-            let suffix = if i > 1 { format!(" {i}") } else { String::new() };
-            parent.join(format!("monkeynotes-export-{date}{suffix}"))
-        })
-        .find(|d| fs::create_dir(d).is_ok())
-        .ok_or_else(|| format!("couldn't create an export folder in {}", parent.display()))?;
-    // Paths that differ only by case would hit EEXIST on case-insensitive disks:
-    // give the later ones " 2", " 3" ... names instead.
-    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-    let names = fsutil::dedup_ci(&paths);
-    let written = files
-        .iter()
-        .zip(&names)
-        .try_for_each(|(f, name)| -> Res<()> { write_new(&note_path(&dest, name, false)?, &f.body, name) });
-    if let Err(e) = written {
-        // `dest` is the folder created just above and holds only what we wrote into
-        // it; don't leave a half-finished export behind.
-        let _ = fs::remove_dir_all(&dest);
-        return Err(e);
-    }
-    Ok(Some(dest.display().to_string()))
+        let Some(picked) = app
+            .dialog()
+            .file()
+            .set_title("export all notes into...")
+            .blocking_pick_folder()
+        else {
+            return Ok(None);
+        };
+        let parent = dialog_path(picked)?;
+        let date: String = date
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '-')
+            .take(10)
+            .collect();
+        let dest = (1..1000)
+            .map(|i| {
+                let suffix = if i > 1 { format!(" {i}") } else { String::new() };
+                parent.join(format!("monkeynotes-export-{date}{suffix}"))
+            })
+            .find(|d| fs::create_dir(d).is_ok())
+            .ok_or_else(|| format!("couldn't create an export folder in {}", parent.display()))?;
+        // Paths that differ only by case would hit EEXIST on case-insensitive disks:
+        // give the later ones " 2", " 3" ... names instead.
+        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        let names = fsutil::dedup_ci(&paths);
+        let written = files
+            .iter()
+            .zip(&names)
+            .try_for_each(|(f, name)| -> Res<()> { write_new(&note_path(&dest, name, false)?, &f.body, name) });
+        if let Err(e) = written {
+            // `dest` is the folder created just above and holds only what we wrote into
+            // it; don't leave a half-finished export behind.
+            let _ = fs::remove_dir_all(&dest);
+            return Err(e);
+        }
+        Ok(Some(dest.display().to_string()))
+    })
+    .await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1030,6 +1068,19 @@ mod tests {
         save_version(&root, "a.md", "new", 1_000 * day + 91 * day).unwrap();
         let dir = history_dir(&root, "a.md", false).unwrap();
         assert_eq!(versions_in(&dir), [1_000 * day + 91 * day]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_clock_that_jumps_years_ahead_doesnt_wipe_history() {
+        let root = temp_root("history-clock");
+        let day = 24 * 60 * 60 * 1000;
+        for i in 0..3 {
+            save_version(&root, "a.md", "v", 1_000 * day + i * 10 * day).unwrap();
+        }
+        save_version(&root, "a.md", "from 2099", 1_000 * day + 75 * 365 * day).unwrap();
+        let dir = history_dir(&root, "a.md", false).unwrap();
+        assert_eq!(versions_in(&dir).len(), 4, "nothing removed for age");
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{ErrorKind, Write};
+use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -171,13 +171,31 @@ pub fn sync_dir(dir: Option<&Path>) {
     let _ = dir;
 }
 
-/// Give `tmp` the permissions of the file it is about to replace (best effort).
+/// Give `tmp` the permissions and creation date of the file it is about to
+/// replace (best effort), so a save doesn't make an old note look new.
 pub fn copy_permissions(existing: &Path, tmp: &Path) {
     if let Ok(m) = fs::metadata(existing) {
         if m.is_file() {
+            if let Ok(created) = m.created() {
+                set_created(tmp, created);
+            }
             let _ = fs::set_permissions(tmp, m.permissions());
         }
     }
+}
+
+/// Set a file's creation date where the OS allows it (not on Linux).
+fn set_created(path: &Path, created: SystemTime) {
+    #[cfg(target_os = "macos")]
+    use std::os::macos::fs::FileTimesExt;
+    #[cfg(windows)]
+    use std::os::windows::fs::FileTimesExt;
+    #[cfg(any(target_os = "macos", windows))]
+    if let Ok(f) = File::options().write(true).open(path) {
+        let _ = f.set_times(fs::FileTimes::new().set_created(created));
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = (path, created);
 }
 
 /// Write via a synced temp file + rename so a crash never leaves a
@@ -201,9 +219,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> Res<()> {
 }
 
 /// Like write_atomic, but fails with EEXIST instead of replacing a file that
-/// already exists. Uses a hard link, which can't replace anything, so even a
-/// file that appears at the last moment (a sync client) is safe; on disks
-/// without hard links it falls back to checking first.
+/// already exists, even one that appears at the last moment (a sync client).
 pub fn write_new(path: &Path, contents: &str, label: &str) -> Res<()> {
     if path.exists() {
         return Err(format!("{EEXIST}: {label}"));
@@ -216,13 +232,12 @@ pub fn write_new(path: &Path, contents: &str, label: &str) -> Res<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    let result = match fs::hard_link(&tmp, path) {
+    let result = match move_noreplace(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(format!("{EEXIST}: {label}")),
-        Err(_) if path.exists() => Err(format!("{EEXIST}: {label}")),
-        Err(_) => fs::rename(&tmp, path).map_err(err),
+        Err(e) => Err(err(e)),
     };
-    let _ = fs::remove_file(&tmp);
+    let _ = fs::remove_file(&tmp); // only still there if the move failed
     sync_dir(path.parent());
     result
 }
@@ -499,22 +514,70 @@ pub fn read_ext_dir(path: &Path, depth: u8, budget: &mut Budget) -> Res<ExtDir> 
 /// file; nothing changed. On failure the original name is restored if possible.
 pub fn case_only_rename(src: &Path, dst: &Path, tmp: &Path) -> Res<bool> {
     fs::rename(src, tmp).map_err(err)?;
-    if dst.exists() {
-        let _ = fs::rename(tmp, src);
-        return Ok(false);
-    }
-    match fs::rename(tmp, dst) {
+    // Neither step may replace a file that appeared meanwhile (on a case-sensitive
+    // disk something else could take `src` or `dst` while ours is at `tmp`).
+    match move_noreplace(tmp, dst) {
         Ok(()) => Ok(true),
         Err(e) => {
-            let _ = fs::rename(tmp, src);
-            Err(err(e))
+            let _ = move_noreplace(tmp, src); // if src was taken too, ours stays safe at tmp
+            if e.kind() == ErrorKind::AlreadyExists {
+                Ok(false)
+            } else {
+                Err(err(e))
+            }
         }
     }
 }
 
-/// Rename without ever replacing what's at `dst` (EEXIST). Files are moved with
-/// a hard link + unlink, which can't replace anything even if `dst` appears at
-/// the last moment; folders (and disks without hard links) check first.
+/// Move `src` to `dst` without ever replacing anything at `dst`, even something
+/// that appears at the last moment: fails with AlreadyExists instead.
+pub fn move_noreplace(src: &Path, dst: &Path) -> io::Result<()> {
+    move_noreplace_with(src, dst, true)
+}
+
+fn move_noreplace_with(src: &Path, dst: &Path, hard_links: bool) -> io::Result<()> {
+    if fs::symlink_metadata(src)?.is_dir() {
+        // rename() replaces an empty folder, so claim the name with one first:
+        // that fails if the name is taken, and the rename fails if it's filled
+        // meanwhile. Windows renames folders differently, so it checks first.
+        #[cfg(windows)]
+        if dst.exists() {
+            return Err(ErrorKind::AlreadyExists.into());
+        }
+        #[cfg(not(windows))]
+        fs::create_dir(dst)?;
+        return fs::rename(src, dst).inspect_err(|_| {
+            #[cfg(not(windows))]
+            let _ = fs::remove_dir(dst); // only removes our claim while it's empty
+        });
+    }
+    // A hard link can't replace anything; then drop the old name.
+    let linked = if hard_links {
+        fs::hard_link(src, dst)
+    } else {
+        Err(io::Error::other("no hard links"))
+    };
+    match linked {
+        Ok(()) => fs::remove_file(src).inspect_err(|_| {
+            let _ = fs::remove_file(dst); // keep exactly one copy
+        }),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(e),
+        Err(_) => {
+            // No hard links on this disk (FAT, exFAT, some network drives): claim
+            // the name with an empty file, which fails if it's taken, then move
+            // over our own claim.
+            File::options().write(true).create_new(true).open(dst)?;
+            fs::rename(src, dst).inspect_err(|_| {
+                if fs::metadata(dst).is_ok_and(|m| m.len() == 0) {
+                    let _ = fs::remove_file(dst);
+                }
+            })
+        }
+    }
+}
+
+/// Rename without ever replacing what's at `dst` (EEXIST), even if it appears
+/// at the last moment.
 pub fn rename_no_clobber(src: &Path, dst: &Path, from: &str, to: &str) -> Res<()> {
     if src == dst {
         return Ok(());
@@ -538,20 +601,10 @@ pub fn rename_no_clobber(src: &Path, dst: &Path, from: &str, to: &str) -> Res<()
             false => Err(format!("{EEXIST}: {to}")),
         };
     }
-    if src.is_dir() {
-        if dst.exists() {
-            return Err(format!("{EEXIST}: {to}"));
-        }
-        return fs::rename(src, dst).map_err(err);
-    }
-    match fs::hard_link(src, dst) {
-        Ok(()) => fs::remove_file(src).map_err(|e| {
-            let _ = fs::remove_file(dst); // keep exactly one copy
-            err(e)
-        }),
+    match move_noreplace(src, dst) {
+        Ok(()) => Ok(()),
         Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(format!("{EEXIST}: {to}")),
-        Err(_) if dst.exists() => Err(format!("{EEXIST}: {to}")),
-        Err(_) => fs::rename(src, dst).map_err(err),
+        Err(e) => Err(err(e)),
     }
 }
 
@@ -898,6 +951,47 @@ mod tests {
         assert!(write_new(&f, "second", "a.md").unwrap_err().starts_with(EEXIST));
         assert_eq!(fs::read_to_string(&f).unwrap(), "first");
         assert_eq!(names(&root), ["a.md"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn move_noreplace_never_replaces_files_or_folders() {
+        let root = scratch("noreplace");
+        for hard_links in [true, false] {
+            // files, with and without hard links (FAT / exFAT disks have none)
+            fs::write(root.join("a.md"), "a").unwrap();
+            fs::write(root.join("b.md"), "b").unwrap();
+            let e = move_noreplace_with(&root.join("a.md"), &root.join("b.md"), hard_links).unwrap_err();
+            assert_eq!(e.kind(), ErrorKind::AlreadyExists);
+            assert_eq!(fs::read_to_string(root.join("b.md")).unwrap(), "b");
+            move_noreplace_with(&root.join("a.md"), &root.join("c.md"), hard_links).unwrap();
+            assert_eq!(fs::read_to_string(root.join("c.md")).unwrap(), "a");
+            assert!(!root.join("a.md").exists());
+            fs::remove_file(root.join("b.md")).unwrap();
+            fs::remove_file(root.join("c.md")).unwrap();
+        }
+        // folders, including onto an empty one (which rename() alone would replace)
+        fs::create_dir_all(root.join("x/inner")).unwrap();
+        fs::create_dir(root.join("empty")).unwrap();
+        let e = move_noreplace(&root.join("x"), &root.join("empty")).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::AlreadyExists);
+        assert!(root.join("x/inner").is_dir());
+        move_noreplace(&root.join("x"), &root.join("y")).unwrap();
+        assert!(root.join("y/inner").is_dir() && !root.join("x").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn saving_keeps_the_creation_date() {
+        let root = scratch("created");
+        let f = root.join("a.md");
+        fs::write(&f, "one").unwrap();
+        let born = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        set_created(&f, born);
+        write_atomic(&f, "two").unwrap();
+        assert_eq!(fs::read_to_string(&f).unwrap(), "two");
+        assert_eq!(fs::metadata(&f).unwrap().created().unwrap(), born);
         fs::remove_dir_all(&root).unwrap();
     }
 
