@@ -311,6 +311,8 @@ pub struct ScanOut {
     /// its size or count cap. They are not in `files`. (Listing is capped.)
     pub unloaded: Vec<String>,
     pub unloaded_count: u64,
+    /// The folder is an Obsidian vault (it has a real .obsidian folder).
+    pub obsidian: bool,
 }
 
 fn join_rel(rel_dir: &str, name: &str) -> String {
@@ -430,6 +432,7 @@ pub fn scan_root_with(root: &Path, known: &HashMap<String, u64>, mut budget: Bud
     }
     out.dirs.sort_by_key(|d| d.to_lowercase());
     out.meta = read_meta(&root.join(META_FILE));
+    out.obsidian = fs::symlink_metadata(root.join(".obsidian")).is_ok_and(|m| m.is_dir());
     Ok(out)
 }
 

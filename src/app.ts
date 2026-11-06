@@ -95,6 +95,9 @@ export function toast(msg: string, action?: () => void, ms = 4000): void {
   toastTimer = window.setTimeout(() => (els.toast.hidden = true), ms);
 }
 
+/** Shortcuts use cmd on a Mac and ctrl elsewhere. */
+export const isMac = navigator.userAgent.includes("Mac");
+
 /** Lower-cased note text for search, recomputed only when a note's text changes. */
 const lowerCache = new WeakMap<Note, { body: string; lower: string }>();
 function lowerBody(n: Note): string {

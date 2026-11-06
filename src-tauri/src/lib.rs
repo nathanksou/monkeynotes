@@ -304,6 +304,8 @@ struct Scan {
     /// disk, so the UI must not treat them as deleted, and should show a warning.
     unloaded: Vec<String>,
     unloaded_count: u64,
+    /// The folder is an Obsidian vault, whose files the app shouldn't rename on its own.
+    obsidian: bool,
 }
 
 fn scan_root(root: &Path, known: &HashMap<String, u64>) -> Res<Scan> {
@@ -323,6 +325,7 @@ fn scan_root(root: &Path, known: &HashMap<String, u64>) -> Res<Scan> {
         meta: out.meta,
         unloaded: out.unloaded,
         unloaded_count: out.unloaded_count,
+        obsidian: out.obsidian,
     })
 }
 

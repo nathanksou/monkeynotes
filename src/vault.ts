@@ -41,6 +41,8 @@ interface Meta {
   starredFolders?: string[];
   /** Keyed by file name inside .trash/. */
   trash?: Record<string, TrashEntry>;
+  /** Files the app named after their title, so they keep following it. */
+  named?: string[];
 }
 
 const FORBIDDEN = /[\\/:*?"<>|\u0000-\u001f]/g;
@@ -103,7 +105,7 @@ export function sortFolders(folders: Folder[]): Folder[] {
 /** Keep only well-formed fields of a metadata file; anything else is ignored rather than crashing a load. */
 function cleanMeta(raw: Record<string, unknown>): Meta {
   const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined);
-  const meta: Meta = { pinned: strings(raw.pinned), starredFolders: strings(raw.starredFolders) };
+  const meta: Meta = { pinned: strings(raw.pinned), starredFolders: strings(raw.starredFolders), named: strings(raw.named) };
   if (raw.trash && typeof raw.trash === "object" && !Array.isArray(raw.trash)) {
     meta.trash = {};
     for (const [name, e] of Object.entries(raw.trash)) {
@@ -168,6 +170,11 @@ export class Vault {
   private nameHints = new WeakMap<Note, string>();
 
   private metaBackedUp = false;
+  /**
+   * Files the app named after their title. null when the metadata predates
+   * this list: then any file named like its title counts, as it used to.
+   */
+  private named: Set<string> | null = null;
 
   constructor(private be: Backend) {}
 
@@ -192,6 +199,9 @@ export class Vault {
     const scan = await this.be.scan();
     this.folders = this.foldersFrom(scan);
     const meta = this.parseMeta(scan.meta);
+    // An Obsidian vault's files were named by someone else; a folder from before
+    // the list existed falls back to the old rule until the metadata is next saved.
+    this.named = meta.named ? new Set(meta.named) : scan.obsidian ? new Set() : null;
     const pinned = new Set(meta.pinned ?? []);
     this.notes = scan.files.map((f) => this.fromFile(f, f.body ?? "", meta, pinned));
     this.warnUnloaded(scan);
@@ -257,6 +267,7 @@ export class Vault {
     this.occupied.clear();
     const byPath = new Map(this.notes.filter((n) => n.path).map((n) => [n.path, n]));
     const meta = this.parseMeta(scan.meta);
+    for (const p of meta.named ?? []) this.named?.add(p); // named by the app on another device
     const seen = new Set<Note>();
     let openChanged = false;
     for (const f of scan.files) {
@@ -336,7 +347,16 @@ export class Vault {
 
   /** Whether a file's name should keep tracking its title. */
   private followsTitle(path: string, body: string): boolean {
-    return !this.titleFromFile && stemOf(path) === safeName(titleLine(body));
+    return !this.titleFromFile && this.namedAfterTitle(path, body);
+  }
+
+  /**
+   * Whether the app named this file after its title (and it still matches). A
+   * file another app named the same way (Obsidian's "Meeting.md" starting with
+   * "# Meeting") isn't ours, and keeps its name.
+   */
+  private namedAfterTitle(path: string, body: string): boolean {
+    return stemOf(path) === safeName(titleLine(body)) && (this.named === null || this.named.has(path));
   }
 
   /**
@@ -564,7 +584,7 @@ export class Vault {
 
   private movedTo(n: Note, path: string): void {
     if (n.path === path) return;
-    if (n.starred || n.deletedAt) {
+    if (n.starred || n.deletedAt || n.autoName || this.named?.has(n.path)) {
       // flush() picks this up before it returns; the timer covers saves made outside a flush
       this.metaDirty = true;
       this.schedule();
@@ -584,15 +604,22 @@ export class Vault {
       pinned: this.notes.filter((n) => n.starred && n.path).map((n) => n.path),
       starredFolders: [...this.starredFolders].sort(),
       trash,
+      // in file-name mode no file follows its title, so keep what the list would be
+      named: this.notes
+        .filter((n) => n.path && (this.titleFromFile ? this.namedAfterTitle(n.path, n.body) : n.autoName))
+        .map((n) => n.path)
+        .sort(),
     };
   }
 
   /** Runs on the queue, so it sees the paths as they are on disk. */
   private async writeMeta(): Promise<void> {
-    const json = JSON.stringify(this.buildMeta());
+    const meta = this.buildMeta();
+    const json = JSON.stringify(meta);
     if (json === this.lastMeta) return;
-    await this.be.write(META_FILE, JSON.stringify(JSON.parse(json), null, 2), false);
+    await this.be.write(META_FILE, JSON.stringify(meta, null, 2), false);
     this.lastMeta = json;
+    this.named = new Set(meta.named);
   }
 
   // ---------------------------------------------------------------- notes

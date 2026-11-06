@@ -60,7 +60,7 @@ Want to build it yourself instead? See [development](#development).
 | `ctrl+shift+f` | search all notes (from any folder) |
 | `ctrl+\` | show / hide the folders sidebar |
 | `ctrl+1` / `ctrl+2` | list view / gallery view |
-| `alt+↑` / `alt+↓` | previous / next note |
+| `alt+↑` / `alt+↓` (macOS: `cmd+option+↑` / `↓`) | previous / next note |
 | `ctrl+=` / `ctrl+-` | font size |
 
 On macOS, use `cmd` wherever `ctrl` is listed. Right-click a note or folder for more actions, and drag notes onto folders to move them.

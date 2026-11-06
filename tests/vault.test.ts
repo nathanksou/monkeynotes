@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TRASH_TTL_MS } from "../src/model";
+import { META_FILE, TRASH_TTL_MS } from "../src/model";
 import { Vault, safeName } from "../src/vault";
 import { MemoryBackend } from "./memory-backend";
 
@@ -104,6 +104,57 @@ describe("trash", () => {
     expect(v.notes[0].deletedAt).toBeTruthy();
     // and it isn't recorded as ours, so a later launch won't purge it either
     expect(be.files.get(".monkeynotes.json")).toBeUndefined();
+  });
+});
+
+describe("which files follow their title", () => {
+  async function vault(seed: Record<string, string>, obsidian = false, be = new MemoryBackend(seed)) {
+    be.obsidian = obsidian;
+    const v = new Vault(be);
+    await v.load();
+    return { be, v };
+  }
+  const named = (be: MemoryBackend) => JSON.parse(be.files.get(META_FILE)?.body ?? "{}").named;
+
+  it("never renames a file in an Obsidian vault just because its name matches its title", async () => {
+    const { be, v } = await vault({ "Meeting.md": "# Meeting\nnotes" }, true);
+    v.setBody(v.notes[0], "# Standup\nnotes");
+    await v.flush();
+    expect(be.paths()).toEqual(["Meeting.md"]);
+  });
+
+  it("still renames notes made in the app, after a restart too", async () => {
+    const { be, v } = await vault({}, true);
+    v.setBody(v.create(""), "new idea\ntext");
+    await v.flush();
+    expect(named(be)).toEqual(["new idea.md"]);
+    const again = await vault({}, true, be);
+    again.v.setBody(again.v.notes[0], "better idea\ntext");
+    await again.v.flush();
+    expect(be.paths().filter((p) => p !== META_FILE)).toEqual(["better idea.md"]);
+    expect(named(be)).toEqual(["better idea.md"]);
+  });
+
+  it("keeps the old rule for folders from before the list, and records it on the next save", async () => {
+    const { be, v } = await vault({ "ideas.md": "ideas\nlist" });
+    v.setBody(v.notes[0], "plans\nlist");
+    await v.flush();
+    expect(be.paths().filter((p) => p !== META_FILE)).toEqual(["plans.md"]);
+    expect(named(be)).toEqual(["plans.md"]);
+  });
+
+  it("goes by the recorded list once there is one", async () => {
+    const { be, v } = await vault({ "ideas.md": "ideas\nlist", [META_FILE]: JSON.stringify({ named: [] }) });
+    v.setBody(v.notes[0], "plans\nlist");
+    await v.flush();
+    expect(be.paths()).toContain("ideas.md");
+  });
+
+  it("drops a note from the list when it's given a name of its own", async () => {
+    const { be, v } = await vault({ "ideas.md": "ideas", [META_FILE]: JSON.stringify({ named: ["ideas.md"] }) });
+    v.renameNote(v.notes[0], "my ideas");
+    await v.flush();
+    expect(named(be)).toEqual([]);
   });
 });
 

@@ -8,10 +8,10 @@ import { spawnEffect } from "./effects";
 import { isNotFound } from "./errors";
 import { Find } from "./find";
 import { ParagraphLayer } from "./paragraphs";
-import { ALL, ROOT, TRASH, WELCOME, normalizeState } from "./model";
+import { ALL, ROOT, TRASH, normalizeState, welcomeNote } from "./model";
 import { Palette } from "./palette";
 import { TypingStats } from "./stats";
-import { $, app, current, els, isGrid, isRealFolder, notesInView, settings, toast, view, writeState } from "./app";
+import { $, app, current, els, isGrid, isMac, isRealFolder, notesInView, settings, toast, view, writeState } from "./app";
 import { applySettings, renderFolders, renderSoon, renderStatsSoon } from "./list";
 import { migrateLegacy, openNote, openVault } from "./notes";
 import { onType, paintLinks, renderStatsBar } from "./typing";
@@ -94,7 +94,7 @@ async function main(): Promise<void> {
       setTimeout(() => toast("couldn't move your v0.1 notes yet; they're safe and will be retried next launch"), 500);
     }
   } else if (!rawState && !app.vault.notes.length) {
-    app.vault.create(ROOT, WELCOME);
+    app.vault.create(ROOT, welcomeNote(isMac));
   }
 
   app.palette = new Palette($("#palette"));

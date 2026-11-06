@@ -27,6 +27,8 @@ export interface Scan {
   unloaded?: string[];
   /** The true number of unloaded notes (`unloaded` lists at most 10,000). */
   unloaded_count?: number;
+  /** The folder is an Obsidian vault (it has an .obsidian folder). */
+  obsidian?: boolean;
 }
 
 /** A file brought in by an import. */

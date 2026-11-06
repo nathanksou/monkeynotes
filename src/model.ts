@@ -108,28 +108,41 @@ export const defaultSettings: Settings = {
   checkUpdates: true,
 };
 
-export const WELCOME = `welcome to monkeynotes
+/** The first note in a new notes folder, with the shortcuts for this computer. */
+export function welcomeNote(mac: boolean): string {
+  const mod = mac ? "cmd" : "ctrl";
+  const groups: [string, string][][] = [
+    [
+      [`esc / ${mod}+k`, "command line (themes, settings, everything)"],
+      [`${mod}+n`, "new note"],
+      [`${mod}+shift+n`, "new folder"],
+      [`${mod}+p`, "jump to a note"],
+      [`${mod}+\\`, "show / hide the folders sidebar"],
+      [`${mod}+1 / ${mod}+2`, "list view / gallery view"],
+      [mac ? "cmd+option+up / down" : "alt+up / down", "previous / next note"],
+      [`${mod}+= / ${mod}+-`, "font size"],
+    ],
+    [
+      [`${mod}+f`, "find in this note"],
+      [`${mod}+shift+f`, "search all notes"],
+      ["[[", "link to another note"],
+      [`${mod}+enter`, `follow a [[link]] or search a #tag (or ${mod}+click it)`],
+    ],
+  ];
+  const width = Math.max(18, ...groups.flat().map(([k]) => k.length + 2));
+  const table = groups.map((rows) => rows.map(([k, what]) => k.padEnd(width) + what).join("\n")).join("\n\n");
+  return `welcome to monkeynotes
 
 just start typing. the first line is the title.
 
-esc / ctrl+k      command line (themes, settings, everything)
-ctrl+n            new note
-ctrl+shift+n      new folder
-ctrl+p            jump to a note
-ctrl+\\            show / hide the folders sidebar
-ctrl+1 / ctrl+2   list view / gallery view
-alt+up / down     previous / next note
-ctrl+= / ctrl+-   font size
-
-ctrl+f            find in this note
-ctrl+shift+f      search all notes
-ctrl+enter        follow the [[link]] under the caret (or ctrl+click it)
+${table}
 
 drag notes onto folders to move them. right-click a note or folder for more.
 
 every note is a plain markdown file. use "change notes folder" in the
 command line to keep them anywhere you like, e.g. a synced folder.
 `;
+}
 
 export function uid(): string {
   return crypto.randomUUID();

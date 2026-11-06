@@ -13,6 +13,8 @@ export class MemoryBackend implements Backend {
   failing = new Set<string>();
   /** Behave like Windows / macOS: names differ only by case are the same file. */
   caseInsensitive = false;
+  /** The folder has an .obsidian folder. */
+  obsidian = false;
   private clock = 1_000_000;
 
   private check(op: string, path: string): void {
@@ -81,6 +83,7 @@ export class MemoryBackend implements Backend {
 
   private result(known: Record<string, number>, dirs: string[]): Scan {
     return {
+      obsidian: this.obsidian,
       dirs,
       files: [...this.files]
         .filter(([p]) => p !== ".monkeynotes.json")

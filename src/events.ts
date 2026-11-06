@@ -2,7 +2,7 @@ import { overlayScrollbar } from "./scrollbar";
 import { showHistory } from "./history";
 import { ROOT, noteTitle } from "./model";
 import { type KeyType, playKey } from "./sound";
-import { $, app, current, els, folderName, galleryShown, isGrid, isRealFolder, notesInView, settings, toast, toastAction, writeState } from "./app";
+import { $, app, current, els, folderName, galleryShown, isGrid, isMac, isRealFolder, notesInView, settings, toast, toastAction, writeState } from "./app";
 import { renderAll, renderNotes } from "./list";
 import { confirmEmptyTrash, moveNote, toggleStar, newFolder, newNote, openFolder, openNote, renameFolder, stepNote, toggleCollapsed } from "./notes";
 import { applyView, backToGallery, bindResizeHandles, focusGallery, focusSearch, galleryKey, narrow, restoreFocus, setSetting, setView, toggleFolders } from "./layout";
@@ -20,8 +20,7 @@ export function bindEvents(): void {
   // Shortcuts use cmd on a Mac, where ctrl+N/P/F/K are the system's text-editing
   // keys. Elsewhere AltGr (how many layouts type \ @ ń ...) arrives as ctrl+alt;
   // no shortcut uses ctrl+alt, so that's typing, not ctrl.
-  const mac = navigator.userAgent.includes("Mac");
-  const mod = (e: KeyboardEvent) => (mac ? e.metaKey : e.ctrlKey && !e.altKey);
+  const mod = (e: KeyboardEvent) => (isMac ? e.metaKey : e.ctrlKey && !e.altKey);
 
   document.addEventListener("keydown", (e) => {
     if (app.palette.isOpen || e.isComposing) return;
@@ -91,7 +90,8 @@ export function bindEvents(): void {
       // in the gallery there's no note open to search in: search all notes instead
       if (galleryShown()) focusSearch();
       else if (current()) app.find.open();
-    } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    } else if (e.altKey && (!isMac || e.metaKey) && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      // on a Mac option+up/down alone moves between paragraphs, so this takes cmd+option
       e.preventDefault();
       stepNote(e.key === "ArrowUp" ? -1 : 1);
     } else if (mod(e) && (e.key === "=" || e.key === "+" || e.key === "-")) {
