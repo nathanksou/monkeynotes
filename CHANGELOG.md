@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- macOS: the app is now signed as a whole, so a downloaded copy no longer says it is "damaged". It still asks for "Open Anyway" once, because it isn't notarized.
+
 ## 0.4.1
 
 - In an Obsidian vault, files are never renamed just because their name matches their first line.
