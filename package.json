@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@fontsource/roboto-mono": "^5.3.0",
-    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-opener": "^2.7.2"
   },
   "devDependencies": {
